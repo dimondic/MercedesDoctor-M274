@@ -14,7 +14,7 @@ jobs:
       - name: Extract project
         run: |
           mkdir source
-          unzip -o MercedesDoctorAI_cloudbuild_v0.1.zip -d source
+          unzip -o MercedesDoctorAI_cloudbuild_v0.1-1.zip -d source
 
       - uses: actions/setup-java@v4
         with:
