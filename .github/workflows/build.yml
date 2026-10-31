@@ -34,7 +34,7 @@ jobs:
           gradle-version: "8.9"
 
       - name: Build APK
-        run: gradle -p source --no-daemon :app:assembleDebug
+        run: gradle -p source --no-daemon -Pkotlin.jvm.target.validation.mode=warning :app:assembleDebug
 
       - uses: actions/upload-artifact@v4
         with:
