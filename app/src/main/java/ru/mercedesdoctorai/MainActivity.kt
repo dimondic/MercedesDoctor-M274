@@ -159,7 +159,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun csvCell(value: String): String = "\"\${value.replace("\"", "\""\"")}\""
+    private fun csvCell(value: String): String = "\"" + value.replace("\"", "\"\"") + "\""
     private fun buildCsv(rows: List<List<String>>): String = buildString {
         appendLine((listOf("timestamp_ms", "time_iso") + columns).joinToString(",") { csvCell(it) })
         rows.forEach { row ->
