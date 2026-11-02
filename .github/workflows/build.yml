@@ -3,7 +3,10 @@ name: Build Mercedes Doctor AI
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, codex/m274-v0.3-apk]
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -11,16 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract project
-        run: |
-          mkdir source
-          unzip -o MercedesDoctorAI_cloudbuild_v0.1-1.zip -d source
-          mkdir -p source/app/src/main/java/ru/mercedesdoctorai
-          mkdir -p source/app/src/main/res/xml
-          cp app/src/main/java/ru/mercedesdoctorai/MainActivity.kt source/app/src/main/java/ru/mercedesdoctorai/MainActivity.kt
-          cp app/src/main/res/xml/file_paths.xml source/app/src/main/res/xml/file_paths.xml
-          cp app/src/main/AndroidManifest.xml source/app/src/main/AndroidManifest.xml
-          cp app/build.gradle.kts source/app/build.gradle.kts
+      - name: Prepare project
+        run: python3 tools/prepare_project.py source
 
       - uses: actions/setup-java@v4
         with:
@@ -35,14 +30,21 @@ jobs:
       - name: Install Android build packages
         run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
+      - name: OBD protocol regression checks
+        run: |
+          mkdir -p /tmp/obd-tests
+          javac -d /tmp/obd-tests app/src/main/java/ru/mercedesdoctorai/ObdProtocol.java app/src/test/java/ru/mercedesdoctorai/ObdProtocolCheck.java
+          java -cp /tmp/obd-tests ru.mercedesdoctorai.ObdProtocolCheck
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
-      - name: Build APK
-        run: gradle -p source --no-daemon -Pkotlin.jvm.target.validation.mode=warning :app:assembleDebug
+      - name: Test, build and lint APK
+        run: gradle -p source --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MercedesDoctorAI-APK
+          name: MercedesDoctor-M274-v0.3-APK
           path: source/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

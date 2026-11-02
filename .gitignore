@@ -1,0 +1,5 @@
+/source/
+.gradle/
+**/build/
+local.properties
+__pycache__/
