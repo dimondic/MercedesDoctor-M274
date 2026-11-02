@@ -1,4 +1,4 @@
-# Mercedes Doctor M274 · 0.3
+# Mercedes Doctor M274 · 0.4
 
 Android 8+ (API 26), Mercedes-Benz E200 W212 2014 / M274, ELM327 **Bluetooth Classic** SPP. The debug APK compiles successfully with JDK 17 / Gradle 8.9. Six JVM tests pass (including 27 protocol checks); Android lint reports zero issues. Phone/vehicle operation has not been tested.
 
@@ -56,3 +56,13 @@ Android build/lint and real ELM hardware checks are separate requirements. Befor
 ## Prepared cloud environment
 
 Toolchains and caches are retained under `/workspace/android-tools`. In this prepared snapshot, run `source tools/cloud_env.sh` from the repository before building. This refreshes Java CA trust and Gradle proxy settings from the current session without printing credentials. Use the existing checkout; do not create a Git worktree unless requested. Network downloads in this managed executor require an execution context with network access; offline builds can use `--offline` once dependencies are cached. No app server is needed.
+
+## 0.4 dashboard and signed release
+
+The main screen now has an RPM gauge, individual sensor cards, a visible app version, and four fixed navigation tabs. Trips, codes and adapter setup have separate pages. No readings are fabricated when disconnected. The supplied older white screen belongs to the pre-0.3 UI.
+
+The signed release APK is published in `downloads/` on branch `codex/m274-v0.3-apk`. This is a locally signed prebuilt APK, not an APK signed by GitHub with a debug key. The private RSA release key and password stay outside the checkout in `/workspace/mercedesdoctor-signing/`; never commit or publish them. Keep a secure backup before deleting this environment. Losing this key prevents compatible updates under the same app identity.
+
+After building `:app:assembleRelease`, run `python3 tools/sign_release.py /workspace/mercedesdoctor-v04/app/build/outputs/apk/release/app-release-unsigned.apk downloads/MercedesDoctor-M274-v0.4-release.apk` in the activated cloud environment. The signer verifies the output and rejects a debuggable APK. CI can build and test unsigned release sources, but does not have the private signing key. It uploads the explicitly committed signed APK separately. Updates must be signed with the same release key.
+
+Android may refuse to install this release as an update over a debug-signed APK. Export old trips before changing installations. Do not uninstall an app with data you have not exported.

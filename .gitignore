@@ -3,3 +3,12 @@
 **/build/
 local.properties
 __pycache__/
+
+# Private signing material must never enter version control.
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.aligned.apk
+*.idsig
+storepass

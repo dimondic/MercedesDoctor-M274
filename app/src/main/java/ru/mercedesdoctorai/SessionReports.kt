@@ -81,7 +81,7 @@ class SessionReports(private val root: File) {
         directory?.let { File(it, "dtc.json").writeText(diagnostics.toString(2)) }
     }
     private fun saveSession(dir: File, complete: Boolean) {
-        File(dir, "session.json").writeText(JSONObject().put("schema_version", 1).put("app_version", "0.3")
+        File(dir, "session.json").writeText(JSONObject().put("schema_version", 1).put("app_version", "0.4")
             .put("started_ms", started).put("ended_ms", if (complete) System.currentTimeMillis() else JSONObject.NULL)
             .put("sample_count", count).put("complete", complete).put("elm_log_truncated", logCount > 10000)
             .put("conditions", "User must describe engine temperature, load and driving conditions when sharing")

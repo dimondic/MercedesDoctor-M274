@@ -9,6 +9,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
+import android.content.res.ColorStateList
+import android.view.Gravity
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -40,10 +42,16 @@ class MainActivity : Activity() {
     private val support = mutableMapOf<Int, ObdProtocol.State>()
     private val latest = mutableMapOf<Int, ElmConnection.Sample>()
     private val points = mutableMapOf<Int, MutableList<ElmConnection.Sample>>()
-    private val cards = mutableMapOf<Int, TextView>()
+    private val cards = mutableMapOf<Int, SensorCard>()
+    private lateinit var gauge: RpmGauge
+    private lateinit var connectionSummary: TextView
+    private lateinit var tripSummary: TextView
+    private lateinit var codeSummary: TextView
+    private val pages = mutableListOf<View>()
+    private val navigation = mutableListOf<Button>()
     private val commandLog = ArrayDeque<String>()
-    private val background = Color.rgb(14, 20, 29)
-    private val accent = Color.rgb(91, 221, 216)
+    private val background = DashboardStyle.background
+    private val accent = DashboardStyle.accent
     private val ticker = object : Runnable {
         override fun run() {
             if (!foreground) return
@@ -55,32 +63,107 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         reports = SessionReports(File(filesDir, "sessions"))
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setPadding(dp(18), dp(22), dp(18), dp(24)); setBackgroundColor(this@MainActivity.background)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setBackgroundColor(this@MainActivity.background)
+            setPadding(0, dp(24), 0, dp(12))
             setOnApplyWindowInsetsListener { view, insets ->
                 if (Build.VERSION.SDK_INT >= 30) {
                     val bars = insets.getInsets(WindowInsets.Type.systemBars())
-                    view.setPadding(dp(18) + bars.left, dp(22) + bars.top, dp(18) + bars.right, dp(24) + bars.bottom)
+                    view.setPadding(bars.left, bars.top + dp(8), bars.right, bars.bottom + dp(8))
                 } else {
                     @Suppress("DEPRECATION")
-                    view.setPadding(dp(18) + insets.systemWindowInsetLeft, dp(22) + insets.systemWindowInsetTop,
-                        dp(18) + insets.systemWindowInsetRight, dp(24) + insets.systemWindowInsetBottom)
+                    view.setPadding(insets.systemWindowInsetLeft, insets.systemWindowInsetTop + dp(8),
+                        insets.systemWindowInsetRight, insets.systemWindowInsetBottom + dp(8))
                 }
                 insets
             }
         }
-        layout.addView(text("MERCEDES DOCTOR", 25f, accent).apply { setTypeface(null, Typeface.BOLD) })
-        layout.addView(text("E200 · W212 · 2014 · M274", 15f))
-        status = text("ELM327 не подключён", 16f)
-        layout.addView(status)
-        layout.addView(button("Подключить ELM327 Bluetooth") { chooseAdapter() })
-        layout.addView(button("Отключить") { disconnect("Соединение отключено") })
+        val header = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL; setPadding(dp(20),dp(8),dp(20),dp(8))
+        }
+        val branding = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        branding.addView(text("MERCEDES DOCTOR", 20f, Color.WHITE).apply { setTypeface(null, Typeface.BOLD) })
+        branding.addView(text("E200  /  W212  /  M274", 12f))
+        header.addView(branding, LinearLayout.LayoutParams(0, -2, 1f))
+        val version = packageManager.getPackageInfo(packageName, 0).versionName
+        header.addView(text(version ?: "", 14f, accent).apply {
+            tag = "app-version"; setPadding(dp(12),dp(8),dp(12),dp(8)); background = DashboardStyle.panel(this@MainActivity)
+        })
+        root.addView(header)
+        status = text("●  ELM327 не подключён", 13f).apply { setPadding(dp(20),dp(6),dp(20),dp(10)) }
+        root.addView(status)
+        val container = FrameLayout(this)
+        root.addView(container, LinearLayout.LayoutParams(-1,0,1f))
+        fun page(title: String, subtitle: String): LinearLayout {
+            val content = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL; setPadding(dp(16),dp(8),dp(16),dp(18))
+            }
+            content.addView(text(title, 26f, Color.WHITE).apply { setTypeface(null, Typeface.BOLD) })
+            content.addView(text(subtitle, 13f))
+            val scroll = ScrollView(this).apply { isFillViewport = true; addView(content) }
+            pages.add(scroll); container.addView(scroll, FrameLayout.LayoutParams(-1,-1))
+            return content
+        }
+        val dashboard = page("Панель двигателя", "Стандартный OBD-II · живые измерения")
+        gauge = RpmGauge(this).apply {
+            background = DashboardStyle.panel(this@MainActivity)
+            setOnClickListener { showGraph(ObdProtocol.SENSORS.first { it.pid == 0x0C }) }
+        }
+        dashboard.addView(gauge, LinearLayout.LayoutParams(-1,dp(280)).apply { setMargins(0,dp(12),0,dp(12)) })
+        val grid = GridLayout(this).apply { columnCount = 2 }
+        ObdProtocol.SENSORS.forEach { sensor ->
+            val card = SensorCard(this).apply {
+                bind(sensor,"—","Нет связи",false)
+                setOnClickListener { showGraph(sensor) }
+            }
+            cards[sensor.pid] = card
+            grid.addView(card, GridLayout.LayoutParams().apply {
+                width = 0; height = GridLayout.LayoutParams.WRAP_CONTENT
+                columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                setMargins(dp(4),dp(4),dp(4),dp(4))
+            })
+        }
+        dashboard.addView(grid)
+        dashboard.addView(button("Настроить виджеты") { configureCards() })
+        dashboard.addView(text("Нажмите на прибор для графика. MAP — абсолютное давление, не давление турбины.", 12f))
+
+        val trips = page("Поездки", "Запись измерений и отчёты для анализа")
+        tripSummary = text("Запись остановлена", 21f, accent).apply { tag = "trip-summary" }
+        trips.addView(tripSummary)
+        trips.addView(text("Каждое измерение сохраняется со временем, единицами и статусом ответа.",14f))
+        record = button("Начать запись поездки") { toggleRecord() }
+        trips.addView(record)
+        trips.addView(button("История поездок") { showHistory() })
+        trips.addView(text("ЭКСПОРТ",14f,accent))
+        trips.addView(button("ZIP-отчёт для ChatGPT") { exportLatest() })
+        trips.addView(button("Таблица измерений · CSV") {
+            val dir = reports.latest()
+            if (dir == null) toast("Сначала запишите поездку") else exportCsv(dir)
+        })
+        trips.addView(text("Перед экспортом остановите запись для получения полного отчёта.",13f))
+        details = text("Запись работает при открытом приложении. При сворачивании поездка сохраняется, Bluetooth отключается.",13f)
+        trips.addView(details)
+
+        val errors = page("Ошибки двигателя", "Стандартные коды неисправностей · Mode 03")
+        codeSummary = text("Чтение ещё не выполнялось",21f,accent).apply { tag = "dtc-summary" }
+        errors.addView(codeSummary)
+        errors.addView(text("Сначала подключите адаптер и включите зажигание. Ответ ЭБУ появится здесь.",14f))
+        errors.addView(button("Считать ошибки двигателя") {
+            if (!connected) toast("Сначала подключите адаптер") else connection?.readCodes()
+        })
+        errors.addView(text("Расширенные блоки Mercedes и стоп-кадры пока не поддерживаются. NO DATA не означает отсутствие ошибок.",13f))
+        errors.addView(text("Только чтение. Очистка ошибок и адаптации не выполняются.",13f))
+
+        val elm = page("Подключение", "ELM327 · Bluetooth Classic / SPP")
+        connectionSummary = text("Адаптер не выбран",17f,accent).apply { tag = "connection-summary" }
+        elm.addView(connectionSummary)
+        elm.addView(button("Выбрать и подключить ELM327") { chooseAdapter() })
+        elm.addView(button("Отключить адаптер") { disconnect("Соединение отключено") })
         val auto = Switch(this).apply {
-            text = "Подключать выбранный адаптер и восстанавливать связь"
+            text = "Автоподключение и восстановление связи"
             setTextColor(Color.LTGRAY); isChecked = preferences.getBoolean("auto", false)
             setOnCheckedChangeListener { _, enabled ->
                 preferences.edit().putBoolean("auto", enabled).apply()
-                // Recreate the link so changing the setting also changes retry behavior immediately.
                 if (connection != null) {
                     val address = preferences.getString("address", null)
                     disconnect("Настройки подключения изменены")
@@ -88,47 +171,40 @@ class MainActivity : Activity() {
                 } else if (enabled) connectSaved()
             }
         }
-        layout.addView(auto)
-        layout.addView(text("ЖИВЫЕ ПОКАЗАНИЯ", 16f, accent))
-        layout.addView(text("Нажмите на параметр, чтобы открыть график. Пустое значение не означает ноль.", 13f))
-        val grid = GridLayout(this).apply { columnCount = 2 }
-        ObdProtocol.SENSORS.forEach { sensor ->
-            val card = text("${sensor.label}\n— ${sensor.unit}\nНет связи", 16f).apply {
-                setPadding(dp(12), dp(14), dp(10), dp(14)); setBackgroundColor(Color.rgb(29, 40, 53))
-                minHeight = dp(128); setOnClickListener { showGraph(sensor) }
-            }
-            cards[sensor.pid] = card
-            grid.addView(card, GridLayout.LayoutParams().apply {
-                width = 0; height = GridLayout.LayoutParams.WRAP_CONTENT
-                columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
-                setMargins(dp(3), dp(3), dp(3), dp(3))
-            })
+        elm.addView(auto)
+        elm.addView(button("Диагностика и экспорт журнала") { showDiagnostics() })
+        elm.addView(text("Сопрягите ELM327 в настройках Android. Разрешите доступ к устройствам поблизости. Поддержка PID проверяется при подключении.",14f))
+        elm.addView(text("Профиль: E200 W212 · 2014 · M274. Фирменные функции MED40 не заявлены.",13f))
+        val tabs = LinearLayout(this).apply { setPadding(dp(8),dp(4),dp(8),0) }
+        listOf("Панель", "Поездки", "Ошибки", "ELM327").forEachIndexed { index, name ->
+            val tab = button(name) { showPage(index) }.apply { tag = "tab-$index"; textSize = 11f; minWidth = 0; minimumWidth = 0 }
+            navigation.add(tab); tabs.addView(tab, LinearLayout.LayoutParams(0,dp(52),1f))
         }
-        layout.addView(grid)
-        layout.addView(button("Настроить виджеты") { configureCards() })
-        layout.addView(text("Данные — стандартный OBD-II. Расширенные параметры MED40 не заявлены. MAP — абсолютное давление, не наддув.", 13f))
-        layout.addView(button("Считать ошибки двигателя · Mode 03") {
-            if (!connected) toast("Сначала подключите адаптер") else connection?.readCodes()
-        })
-        record = button("Начать запись поездки") { toggleRecord() }
-        layout.addView(record)
-        layout.addView(button("Экспорт для ChatGPT · ZIP") { exportLatest() })
-        layout.addView(button("Экспорт CSV последней записи") {
-            val dir = reports.latest()
-            if (dir == null) toast("Сначала запишите поездку") else exportCsv(dir)
-        })
-        layout.addView(button("История поездок") { showHistory() })
-        layout.addView(button("Диагностика подключения / журнал") { showDiagnostics() })
-        details = text("Запись и соединение работают при открытом приложении. При уходе с экрана поездка сохраняется, Bluetooth отключается.", 13f)
-        layout.addView(details)
-        setContentView(ScrollView(this).apply { addView(layout) })
+        root.addView(tabs)
+        setContentView(root)
+        showPage(savedInstanceState?.getInt("page",0) ?: 0)
         applyVisibility()
     }
-    private fun text(value: String, size: Float, color: Int = Color.LTGRAY) = TextView(this).apply {
+    private var currentPage = 0
+    private fun showPage(index: Int) {
+        currentPage = index.coerceIn(0,3)
+        pages.forEachIndexed { i, page -> page.visibility = if (i == currentPage) View.VISIBLE else View.GONE }
+        navigation.forEachIndexed { i, tab ->
+            tab.isSelected = i == currentPage
+            tab.setTextColor(if (i == currentPage) Color.BLACK else DashboardStyle.muted)
+            tab.backgroundTintList = ColorStateList.valueOf(if (i == currentPage) accent else DashboardStyle.surface)
+        }
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putInt("page",currentPage); super.onSaveInstanceState(outState)
+    }
+    private fun text(value: String, size: Float, color: Int = DashboardStyle.muted) = TextView(this).apply {
         text = value; textSize = size; setTextColor(color); setPadding(0, dp(5), 0, dp(5))
     }
     private fun button(label: String, action: () -> Unit) = Button(this).apply {
-        text = label; isAllCaps = false; setOnClickListener { action() }
+        text = label; isAllCaps = false; minHeight = dp(48)
+        backgroundTintList = ColorStateList.valueOf(DashboardStyle.surface)
+        setTextColor(accent); setOnClickListener { action() }
     }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
     private fun permission(): Boolean = Build.VERSION.SDK_INT < 31 ||
@@ -172,11 +248,13 @@ class MainActivity : Activity() {
                 override fun status(text: String, connected: Boolean) = ui {
                     this@MainActivity.connected = connected
                     status.text = text
+                    connectionSummary.text = text
                     if (!connected) stopRecording()
                 }
                 override fun metadata(version: String, protocol: String, support: Map<Int, ObdProtocol.State>) = ui {
                     adapterVersion = version; this@MainActivity.protocol = protocol
                     this@MainActivity.support.clear(); this@MainActivity.support.putAll(support)
+                    connectionSummary.text = getString(R.string.adapter_summary, version, protocol)
                     storage { reports.metadata(version, protocol, support) }
                 }
                 override fun sample(sample: ElmConnection.Sample) = ui {
@@ -196,6 +274,8 @@ class MainActivity : Activity() {
                         codes.isEmpty() -> "Стандартные DTC Mode 03 не возвращены."
                         else -> codes.joinToString("\n")
                     }
+                    codeSummary.text = message
+                    showPage(2)
                     AlertDialog.Builder(this@MainActivity).setTitle("Ошибки OBD-II")
                         .setMessage("$message\n\nЭто не полный скан блоков Mercedes.\nОтвет ELM327:\n$raw")
                         .setPositiveButton("Закрыть", null).show()
@@ -229,6 +309,7 @@ class MainActivity : Activity() {
     }
     private fun refreshCards() {
         val now = System.currentTimeMillis()
+        if (::tripSummary.isInitialized) tripSummary.text = getString(R.string.trip_summary, if (reports.active) "Идёт запись" else "Запись остановлена", reports.rows)
         ObdProtocol.SENSORS.forEach { sensor ->
             val sample = latest[sensor.pid]
             val stale = sample != null && now - sample.time > sensor.intervalMs * 2 + 5000
@@ -240,10 +321,8 @@ class MainActivity : Activity() {
                 sample != null -> stateLabel(sample.state)
                 else -> "Ожидание"
             }
-            cards[sensor.pid]?.apply {
-                text = getString(R.string.sensor_card, sensor.label, value, sensor.unit, label)
-                setTextColor(if (valid) accent else Color.LTGRAY)
-            }
+            cards[sensor.pid]?.bind(sensor, value, label, valid)
+            if (sensor.pid == 0x0C && ::gauge.isInitialized) gauge.bind(if (valid) sample?.value else null, label)
         }
     }
     private fun configureCards() {

@@ -1,6 +1,7 @@
 <resources>
     <string name="enable_bluetooth">Включите Bluetooth</string>
     <string name="connection_failed">Не удалось подключиться: %1$s</string>
-    <string name="sensor_card">%1$s\n%2$s %3$s\n%4$s</string>
+    <string name="trip_summary">%1$s · измерений: %2$d</string>
+    <string name="adapter_summary">%1$s\nПротокол: %2$s</string>
     <string name="graph_window">Окно: %1$d секунд</string>
 </resources>

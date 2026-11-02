@@ -41,10 +41,22 @@ jobs:
           gradle-version: "8.9"
 
       - name: Test, build and lint APK
-        run: gradle -p source --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:lintDebug
+        run: gradle -p source --no-daemon :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease :app:lintDebug :app:lintRelease
+
+      - name: Verify published release APK
+        working-directory: downloads
+        run: |
+          sha256sum -c MercedesDoctor-M274-v0.4-release.apk.sha256
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose MercedesDoctor-M274-v0.4-release.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MercedesDoctor-M274-v0.3-APK
+          name: MercedesDoctor-M274-v0.4-DEBUG
           path: source/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MercedesDoctor-M274-v0.4-RELEASE
+          path: downloads/MercedesDoctor-M274-v0.4-release.apk
           if-no-files-found: error
