@@ -112,7 +112,6 @@ class MainActivity : Activity() {
         space(root, 24)
         val scroll = ScrollView(this).apply {
             isFillViewport = false
-            fillViewport = false
         }
         body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -253,7 +252,6 @@ class MainActivity : Activity() {
                     textSize = 14f
                     setTextColor(white)
                     isChecked = getSharedPreferences("elm", MODE_PRIVATE).getBoolean("auto", true)
-                    buttonTintList = null
                     setOnCheckedChangeListener { _, checked ->
                         getSharedPreferences("elm", MODE_PRIVATE).edit().putBoolean("auto", checked).apply()
                     }
