@@ -42,6 +42,9 @@ class ObdService : Service() {
     private var address: String? = null
     private var socket: BluetoothSocket? = null
     private var csvFile: File? = null
+    private val permitted = setOf("ATI","ATZ","ATE0","ATL0","ATS0","ATH0","ATH1",
+        "ATAT1","ATSP0","ATDP","ATSH7E0","ATSH7DF","03","0100","0120") + pids.keys
+    @Volatile private var medProbePending = true
 
     override fun onCreate() {
         super.onCreate()
@@ -95,6 +98,7 @@ class ObdService : Service() {
             DTC -> needDtc = true
             MED40 -> {
                 med40 = !med40
+                medProbePending = med40
                 getSharedPreferences("elm", MODE_PRIVATE).edit().putBoolean("med40", med40).apply()
                 detail = if (med40) "MED40 проба: только чтение OBD-II, не Xentry"
                     else "MED40 проба выключена"
@@ -132,9 +136,16 @@ class ObdService : Service() {
                             "; ECU 0100: " + supportRaw + ". Проверьте зажигание."
                         throw IllegalStateException("ЭБУ не подтвердил PID 0100")
                     }
+                    val upperRaw = send("0120", 4500)
+                    val upper = response(upperRaw, "4120")
                     val enabled = pids.filterKeys { cmd ->
                         val n = cmd.substring(2).toInt(16)
-                        n in 1..32 && (support[(n - 1) / 8] and (128 shr ((n - 1) % 8))) != 0
+                        when {
+                            n in 1..32 -> (support[(n - 1) / 8] and (128 shr ((n - 1) % 8))) != 0
+                            n in 33..64 && upper != null && upper.size >= 4 ->
+                                (upper[(n - 33) / 8] and (128 shr ((n - 33) % 8))) != 0
+                            else -> false
+                        }
                     }
                     connected = true
                     failures = 0
@@ -145,7 +156,8 @@ class ObdService : Service() {
                             needDtc = false
                             detail = parseDtc(send("03", 6500))
                         }
-                        if (med40) {
+                        if (med40 && medProbePending) {
+                            medProbePending = false
                             // Safe read-only probe, not proprietary MED40 identification.
                             send("ATH1")
                             send("ATSH7E0")
@@ -179,6 +191,7 @@ class ObdService : Service() {
     }
     /** Serial prompt-framed commands. Both screen and logger use this one thread. */
     private fun send(cmd: String, timeout: Long = 3200): String {
+        require(cmd in permitted) { "Запрещённая команда OBD/ELM: " + cmd }
         val s = socket ?: throw IllegalStateException("Потеряна связь")
         val input = s.inputStream
         while (input.available() > 0) input.read()
