@@ -33,25 +33,32 @@ class MainActivity : Activity() {
     private val accent = Color.rgb(69, 218, 190)
     private val white = Color.WHITE
     private val handler = Handler(Looper.getMainLooper())
-    private var page = 3  // 0 Panel, 1 Trips, 2 Errors, 3 ELM327
+    private var page = 0  // 0 Panel, 1 Trips, 2 Errors, 3 ELM327
     private lateinit var headerStatus: TextView
     private lateinit var versionTag: TextView
     private lateinit var body: LinearLayout
     private lateinit var menu: LinearLayout
     private var lastUiKey = ""
+    private var rpmGauge: TachometerView? = null
+    private val liveValueViews = mutableMapOf<String, TextView>()
+    private var connectionLabel: TextView? = null
+    private var tripLabel: TextView? = null
+    private var errorsLabel: TextView? = null
+    private lateinit var scrollView: ScrollView
     private val refresh = object : Runnable {
         override fun run() {
-            val s = ObdService.instance
-            val confirmed = if (s?.connected == true) s.values.size else 0
-            headerStatus.text = (s?.status ?: "ELM327 не подключён") +
-                "\nПодтверждено параметров: " + confirmed + " из 10"
-            val key = listOf(page, s?.status, s?.detail, s?.connected, s?.recording,
-                s?.samples, s?.med40, s?.values?.entries?.sortedBy { it.key }?.toString()).joinToString("|")
-            if (lastUiKey != key) {
+            val service = ObdService.instance
+            val confirmed = if (service?.connected == true) service.values.size else 0
+            headerStatus.text = (service?.status ?: "ELM327 не подключён") +
+                "  ·  PID: " + confirmed + "/10"
+            val key = listOf(page, service?.connected, service?.recording,
+                service?.med40, service?.status?.startsWith("Нет данных ЭБУ")).joinToString("|")
+            if (key != lastUiKey) {
                 lastUiKey = key
-                renderPage(s)
+                renderPage(service)
             }
-            handler.postDelayed(this, 1200)
+            updateLive(service)
+            handler.postDelayed(this, 900)
         }
     }
 
@@ -88,37 +95,37 @@ class MainActivity : Activity() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(bg)
-            setPadding(dp(18), dp(22), dp(18), dp(12))
+            setPadding(dp(14), dp(10), dp(14), dp(8))
         }
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         val names = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        names.addView(text("MERCEDES DOCTOR", 23f, white, true))
-        space(names, 9)
+        names.addView(text("MERCEDES DOCTOR", 20f, white, true))
+        space(names, 3)
         names.addView(text("E200  /  W212  /  M274", 13f, muted))
         top.addView(names, LinearLayout.LayoutParams(0, -2, 1f))
-        versionTag = text("0.5", 16f, accent).apply {
+        versionTag = text("0.5", 14f, accent).apply {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = background(surface, 24f, Color.rgb(54, 70, 86))
         }
         top.addView(versionTag)
         root.addView(top)
-        space(root, 19)
+        space(root, 10)
         headerStatus = text("Проверка состояния ELM327...", 13f, muted)
         root.addView(headerStatus)
-        space(root, 24)
-        val scroll = ScrollView(this).apply {
+        space(root, 8)
+        scrollView = ScrollView(this).apply {
             isFillViewport = false
         }
         body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(0, 0, 0, dp(18))
         }
-        scroll.addView(body)
-        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        scrollView.addView(body)
+        root.addView(scrollView, LinearLayout.LayoutParams(-1, 0, 1f))
         menu = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -147,7 +154,7 @@ class MainActivity : Activity() {
                     renderPage(ObdService.instance)
                 }
             }
-            val margins = LinearLayout.LayoutParams(0, dp(55), 1f).apply {
+            val margins = LinearLayout.LayoutParams(0, dp(49), 1f).apply {
                 marginStart = dp(3); marginEnd = dp(3)
             }
             menu.addView(b, margins)
@@ -155,79 +162,133 @@ class MainActivity : Activity() {
     }
 
     private fun section(title: String, subtitle: String? = null) {
-        body.addView(text(title, 26f, white, true))
+        body.addView(text(title, 23f, white, true))
         if (subtitle != null) {
-            space(body, 10)
-            body.addView(text(subtitle, 15f, muted))
+            space(body, 3)
+            body.addView(text(subtitle, 13f, muted))
         }
-        space(body, 23)
+        space(body, 12)
     }
     private fun note(value: String, color: Int = muted, fontSize: Float = 15f) {
         body.addView(text(value, fontSize, color))
-        space(body, 16)
+        space(body, 10)
     }
     private fun action(label: String, operation: () -> Unit) {
         val button = TextView(this).apply {
             text = label
             gravity = Gravity.CENTER
-            textSize = 15f
+            textSize = 14f
             setTextColor(accent)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            minHeight = dp(52)
+            minHeight = dp(42)
             setPadding(dp(10), dp(10), dp(10), dp(10))
             background = background(surface, 4f)
             setOnClickListener { operation() }
         }
-        body.addView(button, LinearLayout.LayoutParams(-1, dp(54)))
-        space(body, 13)
+        body.addView(button, LinearLayout.LayoutParams(-1, dp(44)))
+        space(body, 7)
     }
-    private fun chipRow(label: String, value: String) {
-        val line = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            background = background(surface, 6f)
-            setPadding(dp(12), dp(14), dp(12), dp(14))
+    private fun twoActions(left: String, leftOp: () -> Unit,
+                           right: String, rightOp: () -> Unit) {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun add(label: String, op: () -> Unit) {
+            val button = TextView(this).apply {
+                text = label
+                gravity = Gravity.CENTER
+                textSize = 13f
+                setTextColor(accent)
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(dp(5), dp(5), dp(5), dp(5))
+                background = background(surface, 7f)
+                setOnClickListener { op() }
+            }
+            row.addView(button, LinearLayout.LayoutParams(0, dp(52), 1f).apply {
+                marginStart = dp(3); marginEnd = dp(3)
+            })
         }
-        line.addView(text(label, 14f, muted), LinearLayout.LayoutParams(0, -2, 1f))
-        line.addView(text(value, 15f, accent, true))
-        body.addView(line)
-        space(body, 9)
+        add(left, leftOp); add(right, rightOp)
+        body.addView(row)
+        space(body, 7)
+    }
+
+    private fun dataGrid() {
+        val keys = listOf("ОЖ","Скорость","Дроссель","MAP","Нагрузка",
+            "Напряжение ECU","STFT","LTFT","Воздух")
+        for (chunk in keys.chunked(2)) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (key in chunk) {
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(12), dp(10), dp(10), dp(10))
+                    background = background(surface, 10f)
+                }
+                card.addView(text(key, 12f, muted))
+                val value = text("—", 20f, accent, true)
+                liveValueViews[key] = value
+                card.addView(value)
+                row.addView(card, LinearLayout.LayoutParams(0, dp(72), 1f).apply {
+                    marginStart = dp(3); marginEnd = dp(3)
+                })
+            }
+            body.addView(row)
+            space(body, 7)
+        }
+    }
+
+    private fun updateLive(service: ObdService?) {
+        val connected = service?.connected == true
+        val rpmString = if (connected) service.values["Обороты"] else null
+        rpmGauge?.rpm = rpmString?.substringBefore(" ")?.toIntOrNull()
+        for ((key, view) in liveValueViews) {
+            view.text = if (connected) service.values[key] ?: "—" else "—"
+        }
+        connectionLabel?.text = (service?.status ?: "Адаптер не подключён") +
+            "\n" + "PID: " + (if (connected) service.values.size else 0) + "/10"
+        tripLabel?.text = if (service?.recording == true)
+            "Запись: " + service.samples + " измерений" else "Запись остановлена"
+        errorsLabel?.text = service?.detail ?: "Нет данных диагностики"
     }
 
     private fun renderPage(service: ObdService?) {
         if (!::body.isInitialized) return
         body.removeAllViews()
+        rpmGauge = null
+        liveValueViews.clear()
+        connectionLabel = null
+        tripLabel = null
+        errorsLabel = null
         when (page) {
             0 -> {
-                section("Панель приборов", "Данные двигателя в реальном времени")
-                if (service?.connected != true) note("Нет подтверждённого обмена с ЭБУ.\nПодключите ELM327 на вкладке «ELM327».")
-                else if (service.values.isEmpty()) note("ЭБУ отвечает, но параметры ещё не получены.", accent)
-                val labels = listOf("Обороты", "ОЖ", "Воздух", "MAP", "Дроссель",
-                    "STFT", "LTFT", "Напряжение ECU", "Скорость", "Нагрузка")
-                labels.forEach { label ->
-                    chipRow(label, service?.values?.get(label) ?: "—")
-                }
-                note("Показываются только полученные ответы OBD-II. Отсутствующие значения не подменяются нулями.", muted, 13f)
+                section("Панель приборов", "M274 · данные ЭБУ в реальном времени")
+                rpmGauge = TachometerView(this)
+                body.addView(rpmGauge, LinearLayout.LayoutParams(-1, -2))
+                space(body, 9)
+                if (service?.connected != true)
+                    note("Нет подтверждённых данных ЭБУ. Нажмите ELM327 для подключения.", muted, 13f)
+                dataGrid()
+                note("Пустые показатели означают отсутствие подтверждённого ответа, а не ноль.", muted, 12f)
             }
             1 -> {
                 section("Поездки", "Запись измерений и отчёты для анализа")
                 val running = service?.recording == true
-                note(if (running) "Запись выполняется · измерений: " + (service?.samples ?: 0)
-                else "Запись остановлена · измерений: " + (service?.samples ?: 0), accent, 22f)
-                note("Каждое измерение сохраняется со временем и доступными показателями двигателя.")
+                tripLabel = text("Запись остановлена", 19f, accent, true)
+                body.addView(tripLabel)
+                space(body, 12)
+
                 action(if (running) "Остановить запись поездки" else "Начать запись поездки") {
                     if (ObdService.instance?.connected != true) {
                         toast("Сначала подтвердите связь с ЭБУ")
                     } else send(ObdService.RECORD)
                 }
                 action("История поездок") { showHistory() }
-                note("ЭКСПОРТ", accent, 14f)
-                action("Таблица измерений · CSV") { showHistory() }
-                action("ZIP-отчёт для ChatGPT · доступен CSV") { showHistory() }
+
                 note("Запись через службу Android продолжается при сворачивании приложения; не завершайте службу принудительно.", muted, 13f)
             }
             2 -> {
                 section("Ошибки двигателя", "Стандартные коды неисправностей · Mode 03")
-                note(service?.detail ?: "Данных диагностического обмена пока нет", accent, 18f)
+                errorsLabel = text(service?.detail ?: "Нет данных диагностики", 16f, accent)
+                body.addView(errorsLabel)
+                space(body, 12)
                 action("Прочитать ошибки OBD-II") {
                     if (service?.connected == true) {
                         send(ObdService.DTC)
@@ -239,16 +300,16 @@ class MainActivity : Activity() {
             }
             else -> {
                 section("Подключение", "ELM327 · Bluetooth Classic / SPP")
-                val info = service?.status ?: "Адаптер не подключён"
-                note(info + "\nПодтверждено параметров: " +
-                    (if (service?.connected == true) service.values.size else 0) + " из 10", accent, 19f)
+                connectionLabel = text("Адаптер не подключён", 16f, accent, true)
+                body.addView(connectionLabel)
+                space(body, 9)
                 action("Выбрать и подключить ELM327") { chooseDevice() }
-                action("Подключить сохранённый адаптер") { send(ObdService.CONNECT) }
-                action("Отключить адаптер") { send(ObdService.DISCONNECT) }
+                twoActions("Подключить сохранённый", { send(ObdService.CONNECT) },
+                    "Отключить", { send(ObdService.DISCONNECT) })
                 val remembered = getSharedPreferences("elm", MODE_PRIVATE).getString("mac", null)
-                if (remembered != null) note("Сопряжённый адаптер сохранён: " + remembered, muted, 12f)
-                val switch = Switch(this).apply {
-                    text = "Автоподключение и восстановление связи"
+                if (remembered != null) note("Сохранён: " + remembered, muted, 12f)
+                val sw = Switch(this).apply {
+                    text = "Автоподключение"
                     textSize = 14f
                     setTextColor(white)
                     isChecked = getSharedPreferences("elm", MODE_PRIVATE).getBoolean("auto", true)
@@ -256,18 +317,20 @@ class MainActivity : Activity() {
                         getSharedPreferences("elm", MODE_PRIVATE).edit().putBoolean("auto", checked).apply()
                     }
                 }
-                body.addView(switch)
-                space(body, 15)
-                action("Диагностика и экспорт журнала") { shareTrace() }
-                note("MED40 · ПРОБНЫЙ РЕЖИМ ТОЛЬКО ЧТЕНИЯ", accent, 14f)
-                action(if (service?.med40 == true) "Выключить пробный MED40" else "Включить пробный MED40") {
-                    if (service?.connected == true) send(ObdService.MED40)
-                    else toast("Сначала подтвердите связь с ЭБУ")
-                }
-                note("MED40 не предоставляет кодирование, адаптации или запись в ЭБУ.\n" +
-                    "Сопрягите ELM327 в настройках Android и разрешите доступ к устройствам поблизости.", muted, 13f)
+                body.addView(sw)
+                space(body, 10)
+                twoActions("Журнал ELM327", { shareTrace() },
+                    if (service?.med40 == true) "MED40: выключить" else "MED40: проба", {
+                        if (ObdService.instance?.connected == true) send(ObdService.MED40)
+                        else toast("Сначала подключите ЭБУ")
+                    })
+                note("MED40 — только пробный запрос чтения. Ошибки не очищаются, настройки ЭБУ не изменяются.",
+                    muted, 12f)
             }
+
         }
+        scrollView.scrollTo(0, 0)
+        updateLive(service)
     }
 
     private fun send(action: String, mac: String? = null) {
