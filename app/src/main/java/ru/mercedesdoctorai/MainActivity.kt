@@ -21,6 +21,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var content: TextView
     private lateinit var tabs: LinearLayout
+    private lateinit var scroll: ScrollView
     private val handler = Handler(Looper.getMainLooper())
     private var page = 0
     private val updater = object : Runnable {
@@ -49,7 +50,7 @@ class MainActivity : Activity() {
         }
         status = TextView(this).apply { textSize = 14f; setPadding(0, 8, 0, 16) }
         content = TextView(this).apply { textSize = 18f; setPadding(0, 6, 0, 16) }
-        val scroll = ScrollView(this).apply {
+        scroll = ScrollView(this).apply {
             addView(content)
             isFillViewport = true
         }
@@ -76,7 +77,8 @@ class MainActivity : Activity() {
             if (mac != null) putExtra(ObdService.DEVICE, mac)
         }
         if (action == ObdService.CONNECT) startForegroundService(intent)
-        else startService(intent)
+        else if (ObdService.instance != null) startService(intent)
+        else Toast.makeText(this, "Сначала подключите ELM327", Toast.LENGTH_SHORT).show()
     }
 
     private fun addButton(label: String, onClick: () -> Unit) {
@@ -98,11 +100,8 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.VERTICAL
                 tag = page
             }
-            val outer = content.parent as? ScrollView
-            if (outer != null) {
-                outer.removeView(content)
-                outer.addView(panel)
-            }
+            scroll.removeAllViews()
+            scroll.addView(panel)
             pageContainer = panel
             setupPage(panel, service)
         } else updateReadings(service)
