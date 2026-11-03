@@ -42,6 +42,15 @@ class ObdService : Service() {
     private var address: String? = null
     private var socket: BluetoothSocket? = null
     private var csvFile: File? = null
+    private val traceFile by lazy { File(File(filesDir, "diagnostics").apply { mkdirs() }, "elm_trace.txt") }
+    fun trace(): File? = traceFile.takeIf { it.exists() }
+    private fun traceCommand(command: String, response: String) {
+        try {
+            if (traceFile.length() > 800_000L) traceFile.writeText("")
+            traceFile.appendText(System.currentTimeMillis().toString() +
+                " | " + command + " | " + response.replace("\r", " ").replace("\n", " ").take(220) + "\n")
+        } catch (_: Exception) {}
+    }
     private val permitted = setOf("ATI","ATZ","ATE0","ATL0","ATS0","ATH0","ATH1",
         "ATAT1","ATSP0","ATDP","ATSH7E0","ATSH7DF","03","0100","0120") + pids.keys
     @Volatile private var medProbePending = true
@@ -203,11 +212,16 @@ class ObdService : Service() {
             if (input.available() > 0) {
                 val v = input.read()
                 if (v < 0) throw IllegalStateException("Bluetooth EOF")
-                if (v == 62) return result.toString().trim()
+                if (v == 62) {
+                    val response = result.toString().trim()
+                    traceCommand(cmd, response)
+                    return response
+                }
                 result.append(v.toChar())
                 if (result.length > 4096) throw IllegalStateException("Слишком длинный ответ")
             } else Thread.sleep(15)
         }
+        traceCommand(cmd, "TIMEOUT: " + result.take(120))
         throw IllegalStateException("Тайм-аут " + cmd + ": " + result.take(80))
     }
     private fun response(raw: String, prefix: String): List<Int>? {
