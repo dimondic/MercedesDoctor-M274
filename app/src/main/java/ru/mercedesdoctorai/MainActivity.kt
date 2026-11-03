@@ -70,7 +70,7 @@ class MainActivity : Activity() {
     private fun background(color: Int, radius: Float = 10f, border: Int? = null): GradientDrawable =
         GradientDrawable().apply {
             setColor(color)
-            cornerRadius = dp(radius).toFloat()
+            cornerRadius = radius * resources.displayMetrics.density
             if (border != null) setStroke(dp(1), border)
         }
     private fun dp(value: Int) = (value * resources.displayMetrics.density + 0.5f).toInt()
