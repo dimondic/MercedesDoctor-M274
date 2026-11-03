@@ -143,6 +143,11 @@ class MainActivity : Activity() {
                     (service?.detail ?: "Последний адаптер будет сохранён после выбора."))
                 addButton("Выбрать сопряжённый ELM327") { chooseDevice() }
                 addButton("Подключить сохранённый адаптер") { send(ObdService.CONNECT) }
+                addButton("Экспорт журнала обмена ELM327") {
+                    val file = ObdService.instance?.trace()
+                    if (file != null) shareCsv(file)
+                    else Toast.makeText(this, "Журнал пока пуст", Toast.LENGTH_SHORT).show()
+                }
                 addButton("Отключиться") { send(ObdService.DISCONNECT); pageContainer = null; draw() }
             }
             4 -> {
@@ -217,7 +222,7 @@ class MainActivity : Activity() {
     private fun shareCsv(file: File) {
         val uri: Uri = FileProvider.getUriForFile(this, packageName + ".fileprovider", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/csv"
+            type = if (file.extension == "txt") "text/plain" else "text/csv"
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
