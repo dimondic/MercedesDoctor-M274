@@ -169,6 +169,9 @@ class ObdService : Service() {
                             else -> false
                         }
                     }
+                    values.clear()
+                    lastSpeedAt = 0L
+                    lastRpmAt = 0L
                     connected = true
                     failures = 0
                     status = "ЭБУ отвечает, " + enabled.size + " PID · " + protocol
@@ -228,7 +231,17 @@ class ObdService : Service() {
                         for ((pid, label) in enabled) {
                             if (!running) break
                             val bytes = response(send(pid), "41" + pid.substring(2))
-                            if (bytes != null) decode(pid, bytes)?.let { values[label] = it }
+                            if (bytes != null) decode(pid, bytes)?.let { decoded ->
+                                values[label] = decoded
+                                if (pid == "010D") lastSpeedAt = SystemClock.elapsedRealtime()
+                                if (pid == "010C") lastRpmAt = SystemClock.elapsedRealtime()
+                            }
+                        }
+                        // ELM327 ATRV is adapter/OBD-port voltage; NOT ECU PID 0142.
+                        if (values["Напряжение ECU"] == null) {
+                            val rv = send("ATRV", 2300).trim()
+                            if (rv.contains(Regex("[0-9]+[.]?[0-9]* *V", RegexOption.IGNORE_CASE)))
+                                values["Напряжение OBD"] = rv
                         }
                         if (recording && values.isNotEmpty()) appendSample()
                         Thread.sleep(700)
