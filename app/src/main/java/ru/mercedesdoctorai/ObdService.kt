@@ -193,7 +193,7 @@ class ObdService : Service() {
                                 appendLine("Фирменные MED40 ошибки могут отсутствовать.")
                             }
                             detail = dtcReport
-                            lastDtcScanAt = System.currentTimeMillis()
+                            lastDtcScanAt = if (stored.valid) System.currentTimeMillis() else 0L
                             persistDtc(dtcReport)
                         }
                         if (needClear) {
@@ -208,8 +208,9 @@ class ObdService : Service() {
                             } else {
                                 val prior = dtcReport
                                 val reply = send("04", 6500)
-                                val verified = reply.replace(Regex("[^0-9A-Fa-f]"), "")
-                                    .uppercase(Locale.US).contains("44")
+                                val compact = reply.trim().replace(Regex("[^0-9A-Fa-f]"), "")
+                                    .uppercase(Locale.US)
+                                val verified = compact == "44" || compact.endsWith("0144")
                                 dtcReport = if (verified)
                                     "Mode 04: ответ ЭБУ 44 получен. Readiness и стоп-кадры могли быть сброшены.\n" + prior
                                 else "Mode 04: подтверждения очистки нет: " + reply + "\n" + prior
