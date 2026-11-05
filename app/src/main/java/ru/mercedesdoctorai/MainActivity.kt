@@ -454,15 +454,104 @@ class MainActivity : Activity() {
             toast("Разрешите доступ к Bluetooth")
         }
     }
+    private fun latestTrip(): File? =
+        File(filesDir, "trips").listFiles()?.filter { it.extension == "csv" }
+            ?.maxByOrNull { it.lastModified() }
+
+    private fun reportText(trip: File?): String = buildString {
+        appendLine("MERCEDES DOCTOR — ОТЧЁТ ДЛЯ CHATGPT")
+        appendLine("Модель: Mercedes-Benz E200 W212, двигатель M274, 2014")
+        appendLine("Источник: универсальный OBD-II ELM327; не Xentry и не полный MED40-скан")
+        appendLine("Дата экспорта (epoch ms): " + System.currentTimeMillis())
+        appendLine("Двигатель: бензиновый турбо M274; данные без подтверждения VIN/комплектации")
+        appendLine("Соединение ЭБУ: " + (ObdService.instance?.status ?: "офлайн"))
+        appendLine("Последняя поездка: " + (trip?.name ?: "не выбрана"))
+        if (trip != null) {
+            appendLine("Размер CSV: " + trip.length() + " байт")
+            appendLine("Строк (с заголовком): " + trip.useLines { it.count() })
+        }
+        val live = ObdService.instance?.values ?: emptyMap()
+        appendLine("Последние значения:")
+        live.entries.sortedBy { it.key }.forEach { appendLine(it.key + ": " + it.value) }
+        appendLine("Последний скан DTC:")
+        appendLine(ObdService.instance?.dtcReport
+            ?: File(File(filesDir,"diagnostics"),"dtc-last.txt")
+                .takeIf { it.exists() }?.readText() ?: "Нет скана")
+        appendLine("Не трактуйте отсутствие Mode 03 как отсутствие фирменных ошибок Mercedes.")
+        appendLine("Задача ChatGPT: проанализировать динамику, пропуски и гипотезы.")
+    }
+
+    private fun makeReportZip(trip: File?): File {
+        val dir = File(cacheDir, "reports").apply { mkdirs() }
+        val archive = File(dir, "MercedesDoctor-M274-" + System.currentTimeMillis() + ".zip")
+        ZipOutputStream(archive.outputStream().buffered()).use { zip ->
+            fun addBytes(name: String, bytes: ByteArray) {
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(bytes)
+                zip.closeEntry()
+            }
+            addBytes("README.txt", reportText(trip).toByteArray(Charsets.UTF_8))
+            if (trip != null && trip.exists()) addBytes(trip.name, trip.readBytes())
+            val dtc = File(File(filesDir,"diagnostics"), "dtc-last.txt")
+            if (dtc.exists()) addBytes("dtc-last.txt", dtc.readBytes())
+            val trace = File(File(filesDir,"diagnostics"), "elm_trace.txt")
+            if (trace.exists()) addBytes("elm_trace.txt", trace.readBytes())
+        }
+        return archive
+    }
+
+    private fun shareDiagnosticReport(trip: File? = null) {
+        try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "Mercedes Doctor M274: поездка и DTC")
+                putExtra(Intent.EXTRA_TEXT, reportText(trip))
+                if (trip != null && trip.exists()) {
+                    val uri = FileProvider.getUriForFile(this@MainActivity,
+                        packageName + ".fileprovider", trip)
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    clipData = ClipData.newUri(contentResolver, "CSV OBD-II", uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            }
+            startActivity(Intent.createChooser(intent, "Передать отчёт в ChatGPT или другое приложение"))
+        } catch (e: Exception) { toast("Отправка отчёта: " + e.message) }
+    }
+
+    private fun shareZip(trip: File?) {
+        try {
+            val file = makeReportZip(trip)
+            val uri = FileProvider.getUriForFile(this,
+                packageName + ".fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                clipData = ClipData.newUri(contentResolver, "OBD ZIP", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Сохранить или отправить ZIP-отчёт"))
+        } catch (e: Exception) { toast("Создание ZIP: " + e.message) }
+    }
+
     private fun showHistory() {
-        val files = ObdService.instance?.history() ?: emptyList()
+        val files = File(filesDir, "trips").listFiles()?.filter { it.extension == "csv" }
+            ?.sortedByDescending { it.lastModified() } ?: emptyList()
         if (files.isEmpty()) {
             toast("Записей пока нет")
             return
         }
         AlertDialog.Builder(this).setTitle("История поездок")
             .setItems(files.map { it.name + " · " + (it.length() / 1024) + " КБ" }.toTypedArray()) {
-                _, i -> share(files[i])
+                _, i ->
+                    AlertDialog.Builder(this).setTitle(files[i].name)
+                        .setItems(arrayOf("CSV — сохранить или отправить",
+                            "Отправить отчёт в ChatGPT", "ZIP: CSV + ошибки + журнал")) { _, action ->
+                            when (action) {
+                                0 -> share(files[i])
+                                1 -> shareDiagnosticReport(files[i])
+                                else -> shareZip(files[i])
+                            }
+                        }.show()
             }.show()
     }
     private fun shareTrace() {
