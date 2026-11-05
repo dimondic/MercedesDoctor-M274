@@ -22,6 +22,9 @@ jobs:
           cp app/src/main/java/ru/mercedesdoctorai/MainActivity.kt source/app/src/main/java/ru/mercedesdoctorai/MainActivity.kt
           cp app/src/main/java/ru/mercedesdoctorai/ObdService.kt source/app/src/main/java/ru/mercedesdoctorai/ObdService.kt
           cp app/src/main/java/ru/mercedesdoctorai/TachometerView.kt source/app/src/main/java/ru/mercedesdoctorai/TachometerView.kt
+          cp app/src/main/java/ru/mercedesdoctorai/DtcDecoder.kt source/app/src/main/java/ru/mercedesdoctorai/DtcDecoder.kt
+          mkdir -p source/app/src/main/res/drawable
+          cp app/src/main/res/drawable/ic_mercedes_doctor.xml source/app/src/main/res/drawable/ic_mercedes_doctor.xml
           cp app/src/main/res/xml/file_paths.xml source/app/src/main/res/xml/file_paths.xml
           cp app/src/main/AndroidManifest.xml source/app/src/main/AndroidManifest.xml
           cp app/build.gradle.kts source/app/build.gradle.kts
