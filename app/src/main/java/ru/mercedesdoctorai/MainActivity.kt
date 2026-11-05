@@ -2,259 +2,591 @@ package ru.mercedesdoctorai
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothSocket
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
-import android.widget.Toast
+import android.os.Handler
+import android.os.Looper
+import android.view.Gravity
+import android.view.WindowInsets
+import android.view.WindowManager
+import android.view.View
+import android.widget.*
 import androidx.core.content.FileProvider
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
-import java.io.InputStream
-import java.io.OutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
-import java.util.UUID
-import kotlin.concurrent.thread
+import java.util.zip.ZipOutputStream
+import java.util.zip.ZipEntry
+import android.content.ClipData
 
+/**
+ * 0.4-style user interface (dark navy, mint controls, persistent four-tab navigation).
+ * RFCOMM and all OBD interactions live exclusively in ObdService.
+ */
 class MainActivity : Activity() {
-    private val spp = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
-    private val columns = listOf("Обороты", "ОЖ", "Впускной воздух", "MAP", "Дроссель", "STFT B1", "LTFT B1", "Напряжение ECU")
-    private var socket: BluetoothSocket? = null
-    private var input: InputStream? = null
-    private var output: OutputStream? = null
-    private val values = linkedMapOf<String, String>()
-    private val tripRows = mutableListOf<List<String>>()
-    private val history = mutableListOf<Trip>()
-    private lateinit var status: TextView
-    private lateinit var data: TextView
-    private lateinit var log: TextView
-    private lateinit var connectBtn: Button
-    private lateinit var recordBtn: Button
-    private var polling = false
-    private var recording = false
-    private var tripStarted = 0L
-
-    private data class Trip(val started: Long, val ended: Long, val csv: String, val count: Int)
+    private val bg = Color.rgb(9, 14, 24)
+    private val surface = Color.rgb(23, 30, 42)
+    private val muted = Color.rgb(153, 161, 178)
+    private val accent = Color.rgb(69, 218, 190)
+    private val white = Color.WHITE
+    private val handler = Handler(Looper.getMainLooper())
+    private var page = 0  // 0 Panel, 1 Trips, 2 Errors, 3 ELM327
+    private lateinit var headerStatus: TextView
+    private lateinit var versionTag: TextView
+    private lateinit var body: LinearLayout
+    private lateinit var menu: LinearLayout
+    private var lastUiKey = ""
+    private var rpmGauge: TachometerView? = null
+    private val liveValueViews = mutableMapOf<String, TextView>()
+    private var connectionLabel: TextView? = null
+    private var tripLabel: TextView? = null
+    private var errorsLabel: TextView? = null
+    private var m274Hint: TextView? = null
+    private lateinit var scrollView: ScrollView
+    private val refresh = object : Runnable {
+        override fun run() {
+            val service = ObdService.instance
+            val confirmed = if (service?.connected == true) service.values.keys.count { it != "Напряжение OBD" } else 0
+            headerStatus.text = (service?.status ?: "ELM327 не подключён") +
+                "  ·  PID: " + confirmed + "/10"
+            val key = listOf(page, service?.connected, service?.recording,
+                service?.med40, service?.status?.startsWith("Нет данных ЭБУ")).joinToString("|")
+            if (key != lastUiKey) {
+                lastUiKey = key
+                renderPage(service)
+            }
+            updateLive(service)
+            handler.postDelayed(this, 900)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        loadHistory()
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(28, 28, 28, 20) }
-        status = TextView(this).apply { textSize = 18f; text = "Mercedes E200 W212 • M274\nАдаптер не подключён" }
-        data = TextView(this).apply { textSize = 16f; text = "Нет данных" }
-        log = TextView(this).apply { textSize = 13f }
-        connectBtn = Button(this).apply { text = "Подключить Bluetooth ELM327"; setOnClickListener { connect() } }
-        val scanBtn = Button(this).apply { text = "Считать ошибки двигателя"; setOnClickListener { readCodes() } }
-        recordBtn = Button(this).apply { text = "Начать запись поездки"; setOnClickListener { toggleRecord() } }
-        val historyBtn = Button(this).apply { text = "История поездок (${history.size})"; setOnClickListener { showHistory() } }
-        val exportBtn = Button(this).apply { text = "Экспорт CSV текущей записи"; setOnClickListener { exportCurrentCsv() } }
-        val shareBtn = Button(this).apply { text = "Поделиться отчётом / CSV"; setOnClickListener { shareReport() } }
-        layout.addView(status); layout.addView(connectBtn); layout.addView(data)
-        layout.addView(scanBtn); layout.addView(recordBtn); layout.addView(exportBtn); layout.addView(historyBtn); layout.addView(shareBtn); layout.addView(log)
-        setContentView(ScrollView(this).apply { addView(layout) })
+        window.statusBarColor = bg
+        window.navigationBarColor = bg
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = 0
+        window.decorView.setBackgroundColor(bg)
         requestBtPermission()
-    }
-
-    private fun requestBtPermission() {
-        if (Build.VERSION.SDK_INT >= 31 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
-            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN), 22)
-    }
-
-    private fun connect() {
-        try {
-            val adapter = BluetoothAdapter.getDefaultAdapter()
-            if (adapter == null || !adapter.isEnabled) { toast("Включи Bluetooth"); return }
-            val devices = adapter.bondedDevices.toList()
-            if (devices.isEmpty()) { toast("Сначала сопряги ELM327 в настройках Bluetooth Android"); return }
-            val names = devices.map { "${it.name ?: "Bluetooth"} • ${it.address}" }.toTypedArray()
-            android.app.AlertDialog.Builder(this).setTitle("Выбери ELM327")
-                .setItems(names) { _, which -> connectDevice(devices[which]) }.show()
-        } catch (_: SecurityException) { toast("Разреши доступ к устройствам поблизости") }
-    }
-
-    private fun connectDevice(device: BluetoothDevice) {
-        status.text = "Подключение к ${device.name}…"
-        thread {
-            try {
-                val s = device.createRfcommSocketToServiceRecord(spp); s.connect()
-                socket = s; input = s.inputStream; output = s.outputStream
-                listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH0", "ATSP0").forEach { command(it) }
-                runOnUiThread { status.text = "Подключено: ${device.name}\nELM327 • профиль OBD-II"; connectBtn.text = "Переподключить" }
-                startPolling()
-            } catch (e: Exception) { runOnUiThread { status.text = "Ошибка подключения: ${e.message}" } }
+        applyScreenMode()
+        buildLayout()
+        if (ObdService.instance == null &&
+            getSharedPreferences("elm", MODE_PRIVATE).getBoolean("auto", true) &&
+            getSharedPreferences("elm", MODE_PRIVATE).contains("mac")) {
+            send(ObdService.CONNECT)
         }
+        handler.post(refresh)
     }
 
-    @Synchronized private fun command(cmd: String): String {
-        val out = output ?: return ""; val inp = input ?: return ""
-        out.write((cmd + "\r").toByteArray()); out.flush()
-        val result = StringBuilder(); val deadline = System.currentTimeMillis() + 1800
-        while (System.currentTimeMillis() < deadline) {
-            if (inp.available() > 0) { val b = inp.read(); if (b == 62) break; if (b >= 0) result.append(b.toChar()) }
-            else Thread.sleep(20)
+    private fun background(color: Int, radius: Float = 10f, border: Int? = null): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = radius * resources.displayMetrics.density
+            if (border != null) setStroke(dp(1), border)
         }
-        return result.toString().replace("\r", " ").replace("\n", " ").trim()
-    }
-
-    private fun pid(cmd: String, label: String, decode: (String) -> String) {
-        val raw = command(cmd).replace(" ", ""); val marker = "41" + cmd.takeLast(2).uppercase(Locale.US)
-        val idx = raw.indexOf(marker)
-        if (idx >= 0 && raw.length >= idx + 6) {
-            val a = raw.substring(idx + 4, idx + 6).toIntOrNull(16)
-            val b = raw.substring(idx + 6, idx + 8).toIntOrNull(16)
-            if (a != null) values[label] = decode(if (b != null) "%02X%02X".format(a, b) else "%02X".format(a))
+    private fun dp(value: Int) = (value * resources.displayMetrics.density + 0.5f).toInt()
+    private fun text(value: String, sp: Float, color: Int = white, bold: Boolean = false): TextView =
+        TextView(this).apply {
+            this.text = value
+            textSize = sp
+            setTextColor(color)
+            if (bold) typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
-    }
+    private fun space(parent: LinearLayout, h: Int) =
+        parent.addView(View(this), LinearLayout.LayoutParams(1, dp(h)))
 
-    private fun startPolling() {
-        if (polling) return
-        polling = true
-        thread {
-            while (polling && socket?.isConnected == true) {
-                try {
-                    pid("010C", "Обороты") { (it.toInt(16) / 4).toString() + " об/мин" }
-                    pid("0105", "ОЖ") { (it.take(2).toInt(16) - 40).toString() + " °C" }
-                    pid("010F", "Впускной воздух") { (it.take(2).toInt(16) - 40).toString() + " °C" }
-                    pid("010B", "MAP") { it.take(2).toInt(16).toString() + " кПа" }
-                    pid("0111", "Дроссель") { "%.1f%%".format(it.take(2).toInt(16) * 100.0 / 255.0) }
-                    pid("0106", "STFT B1") { "%.1f%%".format((it.take(2).toInt(16) - 128) * 100.0 / 128.0) }
-                    pid("0107", "LTFT B1") { "%.1f%%".format((it.take(2).toInt(16) - 128) * 100.0 / 128.0) }
-                    pid("0142", "Напряжение ECU") { "%.2f В".format(it.toInt(16) / 1000.0) }
-                    val snapshot = values.toMap()
-                    if (recording) tripRows.add(listOf(System.currentTimeMillis().toString()) + columns.map { snapshot[it] ?: "" })
-                    runOnUiThread { data.text = snapshot.entries.joinToString("\n") { "${it.key}: ${it.value}" } }
-                    Thread.sleep(1000)
-                } catch (e: Exception) { runOnUiThread { status.text = "Связь прервана: ${e.message}" }; polling = false }
+    private fun buildLayout() {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bg)
+            setPadding(dp(14), dp(10), dp(14), dp(8))
+        }
+        if (Build.VERSION.SDK_INT >= 35) {
+            root.setOnApplyWindowInsetsListener { view, insets ->
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                view.setPadding(dp(14), dp(10) + bars.top, dp(14),
+                    dp(8) + bars.bottom)
+                insets
             }
         }
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val names = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        names.addView(text("MERCEDES DOCTOR", 20f, white, true))
+        space(names, 3)
+        names.addView(text("E200  /  W212  /  M274", 13f, muted))
+        top.addView(names, LinearLayout.LayoutParams(0, -2, 1f))
+        versionTag = text("0.6", 14f, accent).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            background = background(surface, 24f, Color.rgb(54, 70, 86))
+        }
+        top.addView(versionTag)
+        root.addView(top)
+        space(root, 10)
+        headerStatus = text("Проверка состояния ELM327...", 13f, muted)
+        root.addView(headerStatus)
+        space(root, 8)
+        scrollView = ScrollView(this).apply {
+            isFillViewport = false
+        }
+        body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, dp(18))
+        }
+        scrollView.addView(body)
+        root.addView(scrollView, LinearLayout.LayoutParams(-1, 0, 1f))
+        menu = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        root.addView(menu)
+        setContentView(root)
+        renderMenu()
+        renderPage(ObdService.instance)
     }
 
-    private fun readCodes() {
-        thread { val codes = command("03"); runOnUiThread { log.text = "Ответ ЭБУ (Mode 03): $codes\nNO DATA не подтверждает отсутствие фирменных ошибок Mercedes." } }
-    }
-
-    private fun toggleRecord() {
-        if (!recording) {
-            tripRows.clear(); tripStarted = System.currentTimeMillis(); recording = true
-            recordBtn.text = "Остановить и сохранить поездку"; toast("Запись начата")
-        } else {
-            recording = false
-            val csv = buildCsv(tripRows)
-            if (tripRows.isNotEmpty()) {
-                history.add(0, Trip(tripStarted, System.currentTimeMillis(), csv, tripRows.size)); saveHistory()
-                toast("Поездка сохранена • ${tripRows.size} измерений")
-            } else toast("Нет измерений для сохранения")
-            recordBtn.text = "Начать запись поездки"
+    private fun renderMenu() {
+        menu.removeAllViews()
+        listOf("Панель", "Поездки", "Ошибки", "ELM327").forEachIndexed { i, label ->
+            val selected = page == i
+            val b = TextView(this).apply {
+                text = label
+                gravity = Gravity.CENTER
+                textSize = 12.5f
+                setTextColor(if (selected) bg else muted)
+                typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                background = background(if (selected) accent else surface, 4f)
+                setOnClickListener {
+                    page = i
+                    lastUiKey = ""
+                    renderMenu()
+                    renderPage(ObdService.instance)
+                }
+            }
+            val margins = LinearLayout.LayoutParams(0, dp(49), 1f).apply {
+                marginStart = dp(3); marginEnd = dp(3)
+            }
+            menu.addView(b, margins)
         }
     }
 
-    private fun csvCell(value: String): String = "\"" + value.replace("\"", "\"\"") + "\""
-    private fun buildCsv(rows: List<List<String>>): String = buildString {
-        appendLine((listOf("timestamp_ms", "time_iso") + columns).joinToString(",") { csvCell(it) })
-        rows.forEach { row ->
-            val ts = row.firstOrNull()?.toLongOrNull() ?: 0L
-            val iso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US).format(Date(ts))
-            appendLine((listOf(ts.toString(), iso) + row.drop(1)).joinToString(",") { csvCell(it) })
+    private fun section(title: String, subtitle: String? = null) {
+        body.addView(text(title, 23f, white, true))
+        if (subtitle != null) {
+            space(body, 3)
+            body.addView(text(subtitle, 13f, muted))
+        }
+        space(body, 12)
+    }
+    private fun note(value: String, color: Int = muted, fontSize: Float = 15f) {
+        body.addView(text(value, fontSize, color))
+        space(body, 10)
+    }
+    private fun action(label: String, operation: () -> Unit) {
+        val button = TextView(this).apply {
+            text = label
+            gravity = Gravity.CENTER
+            textSize = 14f
+            setTextColor(accent)
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            minHeight = dp(42)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = background(surface, 4f)
+            setOnClickListener { operation() }
+        }
+        body.addView(button, LinearLayout.LayoutParams(-1, dp(44)))
+        space(body, 7)
+    }
+    private fun twoActions(left: String, leftOp: () -> Unit,
+                           right: String, rightOp: () -> Unit) {
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun add(label: String, op: () -> Unit) {
+            val button = TextView(this).apply {
+                text = label
+                gravity = Gravity.CENTER
+                textSize = 13f
+                setTextColor(accent)
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(dp(5), dp(5), dp(5), dp(5))
+                background = background(surface, 7f)
+                setOnClickListener { op() }
+            }
+            row.addView(button, LinearLayout.LayoutParams(0, dp(52), 1f).apply {
+                marginStart = dp(3); marginEnd = dp(3)
+            })
+        }
+        add(left, leftOp); add(right, rightOp)
+        body.addView(row)
+        space(body, 7)
+    }
+
+    private fun dataGrid() {
+        val keys = listOf("ОЖ","Скорость","Дроссель","MAP","Нагрузка",
+            "Напряжение ECU","Напряжение OBD","STFT","LTFT","Воздух")
+        for (chunk in keys.chunked(2)) {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            for (key in chunk) {
+                val card = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(12), dp(10), dp(10), dp(10))
+                    background = background(surface, 10f)
+                }
+                card.addView(text(key, 12f, muted))
+                val value = text("—", 20f, accent, true)
+                liveValueViews[key] = value
+                card.addView(value)
+                row.addView(card, LinearLayout.LayoutParams(0, dp(72), 1f).apply {
+                    marginStart = dp(3); marginEnd = dp(3)
+                })
+            }
+            body.addView(row)
+            space(body, 7)
         }
     }
 
-    private fun exportCurrentCsv() {
-        if (tripRows.isEmpty()) { toast("Пока нет данных записи. Начни и останови запись поездки."); return }
-        shareCsv(buildCsv(tripRows), "MercedesDoctor-current.csv")
+    private fun updateLive(service: ObdService?) {
+        val connected = service?.connected == true
+        val rpmString = if (connected) service.values["Обороты"] else null
+        rpmGauge?.rpm = rpmString?.substringBefore(" ")?.toIntOrNull()
+        for ((key, view) in liveValueViews) {
+            view.text = if (connected) service.values[key] ?: "—" else "—"
+        }
+        connectionLabel?.text = (service?.status ?: "Адаптер не подключён") +
+            "\n" + "PID: " + (if (connected) service.values.size else 0) + "/10"
+        tripLabel?.text = if (service?.recording == true)
+            "Запись: " + service.samples + " измерений" else "Запись остановлена"
+        errorsLabel?.text = service?.dtcReport ?: "Нет данных диагностики"
+        val ltft = service?.values?.get("LTFT")?.substringBefore(" ")?.toDoubleOrNull()
+        val temp = service?.values?.get("ОЖ")?.substringBefore(" ")?.toDoubleOrNull()
+        m274Hint?.text = if (service?.connected == true && ltft != null && temp != null &&
+            temp >= 80 && kotlin.math.abs(ltft) >= 15.0)
+            "M274 · наблюдение: LTFT " + ltft + "% при ОЖ " + temp +
+                "°C. Сравните STFT, MAP и режим работы. Сам по себе показатель не доказывает неисправность."
+        else "M274 · стандартный OBD-II: LTFT/STFT/MAP; фирменные параметры MED40 могут быть недоступны."
     }
 
-    private fun showHistory() {
-        if (history.isEmpty()) { toast("Сохранённых поездок пока нет"); return }
-        val fmt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.getDefault())
-        val labels = history.mapIndexed { i, t -> "${i + 1}. ${fmt.format(Date(t.started))} • ${t.count} строк" }.toTypedArray()
-        android.app.AlertDialog.Builder(this).setTitle("История поездок")
-            .setItems(labels) { _, which -> showTripActions(which) }
-            .setNegativeButton("Закрыть", null).show()
+    private fun renderPage(service: ObdService?) {
+        if (!::body.isInitialized) return
+        body.removeAllViews()
+        rpmGauge = null
+        liveValueViews.clear()
+        connectionLabel = null
+        tripLabel = null
+        errorsLabel = null
+        m274Hint = null
+        when (page) {
+            0 -> {
+                section("Панель приборов", "M274 · данные ЭБУ в реальном времени")
+                rpmGauge = TachometerView(this)
+                body.addView(rpmGauge, LinearLayout.LayoutParams(-1, -2))
+                space(body, 9)
+                if (service?.connected != true)
+                    note("Нет подтверждённых данных ЭБУ. Нажмите ELM327 для подключения.", muted, 13f)
+                dataGrid()
+                m274Hint = text("M274: анализ топливных коррекций появится после получения данных.", 12f, muted)
+                body.addView(m274Hint)
+                space(body, 9)
+                note("Напряжение OBD — на разъёме адаптера (ATRV), не напряжение ECU. " +
+                    "Пустые показатели не заменяются нулями.", muted, 12f)
+            }
+            1 -> {
+                section("Поездки", "Запись измерений и отчёты для анализа")
+                val running = service?.recording == true
+                tripLabel = text("Запись остановлена", 19f, accent, true)
+                body.addView(tripLabel)
+                space(body, 12)
+
+                action(if (running) "Остановить запись поездки" else "Начать запись поездки") {
+                    if (ObdService.instance?.connected != true) {
+                        toast("Сначала подтвердите связь с ЭБУ")
+                    } else send(ObdService.RECORD)
+                }
+                action("История поездок") { showHistory() }
+                action("Отчёт поездки → ChatGPT") { shareDiagnosticReport(latestTrip()) }
+                action("Экспорт ZIP (поездка + DTC)") { shareZip(latestTrip()) }
+                note("Запись через службу Android продолжается при сворачивании приложения; не завершайте службу принудительно.", muted, 13f)
+            }
+            2 -> {
+                section("Ошибки двигателя", "Сохранённые 03 · ожидающие 07 · постоянные 0A")
+                errorsLabel = text(service?.dtcReport ?: "Нет данных диагностики", 15f, accent)
+                body.addView(errorsLabel)
+                space(body, 12)
+                action("Сканировать ошибки 03 / 07 / 0A") {
+                    if (service?.connected == true) {
+                        send(ObdService.DTC)
+                        toast("Запрос ошибок отправлен в очередь")
+                    } else toast("Сначала подключите ЭБУ")
+                }
+                action("Сбросить ошибки OBD-II (подтверждение)") { requestClearDtc() }
+                action("Отправить отчёт в ChatGPT") { shareDiagnosticReport() }
+                action("Экспорт журнала диагностики") { shareTrace() }
+                note("Mode 04 очищает данные OBD-II, стоп-кадры и может сбросить readiness. " +
+                    "Не удаляет все фирменные ошибки MED40. Перед очисткой сохраните отчёт.",
+                    muted, 12f)
+            }
+            else -> {
+                section("Подключение", "ELM327 · Bluetooth Classic / SPP")
+                connectionLabel = text("Адаптер не подключён", 16f, accent, true)
+                body.addView(connectionLabel)
+                space(body, 9)
+                action("Выбрать и подключить ELM327") { chooseDevice() }
+                twoActions("Подключить сохранённый", { send(ObdService.CONNECT) },
+                    "Отключить", { send(ObdService.DISCONNECT) })
+                val remembered = getSharedPreferences("elm", MODE_PRIVATE).getString("mac", null)
+                if (remembered != null) note("Сохранён: " + remembered, muted, 12f)
+                val sw = Switch(this).apply {
+                    text = "Автоподключение"
+                    textSize = 14f
+                    setTextColor(white)
+                    isChecked = getSharedPreferences("elm", MODE_PRIVATE).getBoolean("auto", true)
+                    setOnCheckedChangeListener { _, checked ->
+                        getSharedPreferences("elm", MODE_PRIVATE).edit().putBoolean("auto", checked).apply()
+                    }
+                }
+                body.addView(sw)
+                val keep = Switch(this).apply {
+                    text = "Не гасить экран, пока приложение открыто"
+                    textSize = 13f
+                    setTextColor(white)
+                    isChecked = getSharedPreferences("elm", MODE_PRIVATE).getBoolean("keep_screen", true)
+                    setOnCheckedChangeListener { _, checked ->
+                        getSharedPreferences("elm", MODE_PRIVATE)
+                            .edit().putBoolean("keep_screen", checked).apply()
+                        applyScreenMode()
+                    }
+                }
+                body.addView(keep)
+                space(body, 10)
+                twoActions("Журнал ELM327", { shareTrace() },
+                    if (service?.med40 == true) "MED40: выключить" else "MED40: проба", {
+                        if (ObdService.instance?.connected == true) send(ObdService.MED40)
+                        else toast("Сначала подключите ЭБУ")
+                    })
+                note("MED40: пробное чтение. Полный скан доступен только с совместимой диагностикой.",
+                    muted, 12f)
+                action("Завершить приложение и отключить ELM327") { exitApplication() }
+            }
+
+        }
+        scrollView.scrollTo(0, 0)
+        updateLive(service)
     }
 
-    private fun showTripActions(index: Int) {
-        val trip = history[index]
-        android.app.AlertDialog.Builder(this).setTitle("Поездка • ${trip.count} измерений")
-            .setItems(arrayOf("Экспортировать CSV", "Поделиться отчётом и CSV")) { _, action ->
-                if (action == 0) shareCsv(trip.csv, "MercedesDoctor-trip-${trip.started}.csv") else shareTripReport(trip)
+    private fun send(action: String, mac: String? = null) {
+        val intent = Intent(this, ObdService::class.java).apply {
+            this.action = action
+            if (mac != null) putExtra(ObdService.DEVICE, mac)
+        }
+        if (action == ObdService.CONNECT) startForegroundService(intent)
+        else if (ObdService.instance != null) startService(intent)
+        else toast("Сначала подключите ELM327")
+    }
+    private fun requestClearDtc() {
+        val service = ObdService.instance
+        if (service?.connected != true) { toast("Сначала подключите ЭБУ"); return }
+        if (service.lastDtcScanAt == 0L ||
+            System.currentTimeMillis() - service.lastDtcScanAt > 10 * 60_000L) {
+            toast("Сначала выполните свежий скан кодов"); return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Очистка DTC меняет состояние ЭБУ")
+            .setMessage("ВНИМАНИЕ: Mode 04 удаляет подтверждённые коды и стоп-кадры, " +
+                "может сбросить readiness/мониторы токсичности. " +
+                "Это НЕ ремонт и не очищает все Mercedes-коды. " +
+                "Автомобиль должен стоять, двигатель должен быть заглушен, зажигание включено.")
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Продолжить") { _, _ ->
+                AlertDialog.Builder(this)
+                    .setTitle("Подтвердить Mode 04?")
+                    .setMessage("Вы согласны очистить стандартные OBD-II коды " +
+                        "и потерять часть диагностических данных? " +
+                        "Другие команды управления автомобилем недоступны.")
+                    .setNegativeButton("Не очищать", null)
+                    .setPositiveButton("ДА, ОЧИСТИТЬ") { _, _ ->
+                        send(ObdService.CLEAR_DTC)
+                        toast("Команда в очереди: приложение проверит скорость и обороты")
+                    }.show()
             }.show()
     }
 
-    private fun saveHistory() {
-        val arr = JSONArray()
-        history.take(30).forEach { t -> arr.put(JSONObject().put("started", t.started).put("ended", t.ended).put("csv", t.csv).put("count", t.count)) }
-        getSharedPreferences("trip_history", MODE_PRIVATE).edit().putString("items", arr.toString()).apply()
+    private fun applyScreenMode() {
+        val keep = getSharedPreferences("elm", MODE_PRIVATE).getBoolean("keep_screen", true)
+        if (keep) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+    private fun exitApplication() {
+        AlertDialog.Builder(this).setTitle("Завершить Mercedes Doctor?")
+            .setMessage("Bluetooth отключится, фоновая запись остановится. " +
+                "Сохранённые CSV останутся на телефоне.")
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Завершить") { _, _ ->
+                if (ObdService.instance != null) send(ObdService.DISCONNECT)
+                finishAndRemoveTask()
+            }.show()
     }
 
-    private fun loadHistory() {
-        try {
-            val arr = JSONArray(getSharedPreferences("trip_history", MODE_PRIVATE).getString("items", "[]"))
-            for (i in 0 until arr.length()) { val o = arr.getJSONObject(i); history.add(Trip(o.getLong("started"), o.getLong("ended"), o.getString("csv"), o.getInt("count"))) }
-        } catch (_: Exception) { history.clear() }
-    }
-
-    private fun shareCsv(csv: String, name: String) {
-        try {
-            val dir = File(cacheDir, "reports").apply { mkdirs() }; val file = File(dir, name)
-            file.writeText("\uFEFF" + csv, Charsets.UTF_8)
-            val uri: Uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-            val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "text/csv"; putExtra(Intent.EXTRA_STREAM, uri); putExtra(Intent.EXTRA_SUBJECT, "Mercedes Doctor — CSV поездки")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(Intent.createChooser(intent, "Экспорт CSV / отправить в ChatGPT"))
-        } catch (e: Exception) { toast("Не удалось экспортировать CSV: ${e.message}") }
-    }
-
-    private fun shareTripReport(trip: Trip) {
-        try {
-            val dir = File(cacheDir, "reports").apply { mkdirs() }; val file = File(dir, "MercedesDoctor-trip-${trip.started}.csv")
-            file.writeText("\uFEFF" + trip.csv, Charsets.UTF_8)
-            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-            val report = "Mercedes-Benz E200 W212 2014, M274\nСтандартный OBD-II через ELM327.\n" +
-                "Начало: ${Date(trip.started)}\nОкончание: ${Date(trip.ended)}\nИзмерений: ${trip.count}\n" +
-                "Проанализируй тренды и качество данных. Не делай вывод о неисправности без подтверждения. Это не полный Xentry-скан."
-            val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"; putExtra(Intent.EXTRA_SUBJECT, "Mercedes Doctor — отчёт M274")
-                putExtra(Intent.EXTRA_TEXT, report); putExtra(Intent.EXTRA_STREAM, uri)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(Intent.createChooser(intent, "Передать отчёт и CSV"))
-        } catch (e: Exception) { toast("Ошибка подготовки отчёта: ${e.message}") }
-    }
-
-    private fun shareReport() {
-        val report = buildString {
-            appendLine("Mercedes-Benz E200 W212 2014, двигатель M274")
-            appendLine("Адаптер: Bluetooth ELM327; данные стандартного OBD-II")
-            appendLine("Дата: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())}")
-            appendLine("Текущие параметры:"); values.forEach { (k, v) -> appendLine("$k: $v") }
-            appendLine("\nЗапись поездки: ${tripRows.size} измерений")
-            appendLine("Важно: это универсальные OBD-II данные, не полный Xentry-скан.")
+    private fun requestBtPermission() {
+        if (Build.VERSION.SDK_INT >= 31 &&
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 101)
         }
-        if (tripRows.isNotEmpty()) {
-            val dir = File(cacheDir, "reports").apply { mkdirs() }; val file = File(dir, "MercedesDoctor-current.csv")
-            file.writeText("\uFEFF" + buildCsv(tripRows), Charsets.UTF_8)
-            val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", file)
-            val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_SUBJECT, "Mercedes Doctor — отчёт M274"); putExtra(Intent.EXTRA_TEXT, report); putExtra(Intent.EXTRA_STREAM, uri); addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            startActivity(Intent.createChooser(intent, "Поделиться отчётом и CSV"))
-        } else {
-            val intent = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_SUBJECT, "Mercedes Doctor — отчёт M274"); putExtra(Intent.EXTRA_TEXT, report) }
-            startActivity(Intent.createChooser(intent, "Поделиться отчётом"))
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 102)
         }
     }
+    private fun chooseDevice() {
+        try {
+            val adapter = BluetoothAdapter.getDefaultAdapter()
+            if (adapter == null || !adapter.isEnabled) {
+                toast("Включите Bluetooth")
+                return
+            }
+            val devices = adapter.bondedDevices.toList()
+            if (devices.isEmpty()) {
+                toast("Сначала сопрягите ELM327 в настройках Bluetooth Android")
+                return
+            }
+            AlertDialog.Builder(this).setTitle("Сопряжённые Bluetooth-устройства")
+                .setItems(devices.map { (it.name ?: "Bluetooth") + "  " + it.address }.toTypedArray()) {
+                    _, index -> send(ObdService.CONNECT, devices[index].address)
+                }.show()
+        } catch (_: SecurityException) {
+            requestBtPermission()
+            toast("Разрешите доступ к Bluetooth")
+        }
+    }
+    private fun latestTrip(): File? =
+        File(filesDir, "trips").listFiles()?.filter { it.extension == "csv" }
+            ?.maxByOrNull { it.lastModified() }
 
-    override fun onDestroy() { polling = false; try { socket?.close() } catch (_: Exception) {}; super.onDestroy() }
-    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
+    private fun reportText(trip: File?): String = buildString {
+        appendLine("MERCEDES DOCTOR — ОТЧЁТ ДЛЯ CHATGPT")
+        appendLine("Модель: Mercedes-Benz E200 W212, двигатель M274, 2014")
+        appendLine("Источник: универсальный OBD-II ELM327; не Xentry и не полный MED40-скан")
+        appendLine("Дата экспорта (epoch ms): " + System.currentTimeMillis())
+        appendLine("Двигатель: бензиновый турбо M274; данные без подтверждения VIN/комплектации")
+        appendLine("Соединение ЭБУ: " + (ObdService.instance?.status ?: "офлайн"))
+        appendLine("Последняя поездка: " + (trip?.name ?: "не выбрана"))
+        if (trip != null) {
+            appendLine("Размер CSV: " + trip.length() + " байт")
+            appendLine("Строк (с заголовком): " + trip.useLines { it.count() })
+        }
+        val live = ObdService.instance?.values ?: emptyMap()
+        appendLine("Последние значения:")
+        live.entries.sortedBy { it.key }.forEach { appendLine(it.key + ": " + it.value) }
+        appendLine("Последний скан DTC:")
+        appendLine(ObdService.instance?.dtcReport
+            ?: File(File(filesDir,"diagnostics"),"dtc-last.txt")
+                .takeIf { it.exists() }?.readText() ?: "Нет скана")
+        appendLine("Не трактуйте отсутствие Mode 03 как отсутствие фирменных ошибок Mercedes.")
+        appendLine("Задача ChatGPT: проанализировать динамику, пропуски и гипотезы.")
+    }
+
+    private fun makeReportZip(trip: File?): File {
+        val dir = File(cacheDir, "reports").apply { mkdirs() }
+        val archive = File(dir, "MercedesDoctor-M274-" + System.currentTimeMillis() + ".zip")
+        ZipOutputStream(archive.outputStream().buffered()).use { zip ->
+            fun addBytes(name: String, bytes: ByteArray) {
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(bytes)
+                zip.closeEntry()
+            }
+            addBytes("README.txt", reportText(trip).toByteArray(Charsets.UTF_8))
+            if (trip != null && trip.exists()) addBytes(trip.name, trip.readBytes())
+            val dtc = File(File(filesDir,"diagnostics"), "dtc-last.txt")
+            if (dtc.exists()) addBytes("dtc-last.txt", dtc.readBytes())
+            val trace = File(File(filesDir,"diagnostics"), "elm_trace.txt")
+            if (trace.exists()) addBytes("elm_trace.txt", trace.readBytes())
+        }
+        return archive
+    }
+
+    private fun shareDiagnosticReport(trip: File? = null) {
+        try {
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "Mercedes Doctor M274: поездка и DTC")
+                putExtra(Intent.EXTRA_TEXT, reportText(trip))
+                if (trip != null && trip.exists()) {
+                    val uri = FileProvider.getUriForFile(this@MainActivity,
+                        packageName + ".fileprovider", trip)
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    clipData = ClipData.newUri(contentResolver, "CSV OBD-II", uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+            }
+            startActivity(Intent.createChooser(intent, "Передать отчёт в ChatGPT или другое приложение"))
+        } catch (e: Exception) { toast("Отправка отчёта: " + e.message) }
+    }
+
+    private fun shareZip(trip: File?) {
+        try {
+            val file = makeReportZip(trip)
+            val uri = FileProvider.getUriForFile(this,
+                packageName + ".fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                clipData = ClipData.newUri(contentResolver, "OBD ZIP", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Сохранить или отправить ZIP-отчёт"))
+        } catch (e: Exception) { toast("Создание ZIP: " + e.message) }
+    }
+
+    private fun showHistory() {
+        val files = File(filesDir, "trips").listFiles()?.filter { it.extension == "csv" }
+            ?.sortedByDescending { it.lastModified() } ?: emptyList()
+        if (files.isEmpty()) {
+            toast("Записей пока нет")
+            return
+        }
+        AlertDialog.Builder(this).setTitle("История поездок")
+            .setItems(files.map { it.name + " · " + (it.length() / 1024) + " КБ" }.toTypedArray()) {
+                _, i ->
+                    AlertDialog.Builder(this).setTitle(files[i].name)
+                        .setItems(arrayOf("CSV — сохранить или отправить",
+                            "Отправить отчёт в ChatGPT", "ZIP: CSV + ошибки + журнал")) { _, action ->
+                            when (action) {
+                                0 -> share(files[i])
+                                1 -> shareDiagnosticReport(files[i])
+                                else -> shareZip(files[i])
+                            }
+                        }.show()
+            }.show()
+    }
+    private fun shareTrace() {
+        val file = ObdService.instance?.trace()
+        if (file != null) share(file) else toast("Журнал пока пуст")
+    }
+    private fun share(file: File) {
+        try {
+            val uri: Uri = FileProvider.getUriForFile(this,
+                packageName + ".fileprovider", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = if (file.extension == "txt") "text/plain" else "text/csv"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Отправить журнал / CSV"))
+        } catch (e: Exception) { toast("Ошибка экспорта: " + e.message) }
+    }
+    private fun toast(value: String) =
+        Toast.makeText(this, value, Toast.LENGTH_LONG).show()
+    override fun onDestroy() {
+        handler.removeCallbacks(refresh)
+        super.onDestroy()
+    }
 }
