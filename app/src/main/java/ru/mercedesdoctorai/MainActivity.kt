@@ -265,7 +265,7 @@ class MainActivity : Activity() {
             "\n" + "PID: " + (if (connected) service.values.size else 0) + "/10"
         tripLabel?.text = if (service?.recording == true)
             "Запись: " + service.samples + " измерений" else "Запись остановлена"
-        errorsLabel?.text = service?.detail ?: "Нет данных диагностики"
+        errorsLabel?.text = service?.dtcReport ?: "Нет данных диагностики"
     }
 
     private fun renderPage(service: ObdService?) {
@@ -304,18 +304,22 @@ class MainActivity : Activity() {
                 note("Запись через службу Android продолжается при сворачивании приложения; не завершайте службу принудительно.", muted, 13f)
             }
             2 -> {
-                section("Ошибки двигателя", "Стандартные коды неисправностей · Mode 03")
-                errorsLabel = text(service?.detail ?: "Нет данных диагностики", 16f, accent)
+                section("Ошибки двигателя", "Сохранённые 03 · ожидающие 07 · постоянные 0A")
+                errorsLabel = text(service?.dtcReport ?: "Нет данных диагностики", 15f, accent)
                 body.addView(errorsLabel)
                 space(body, 12)
-                action("Прочитать ошибки OBD-II") {
+                action("Сканировать ошибки 03 / 07 / 0A") {
                     if (service?.connected == true) {
                         send(ObdService.DTC)
                         toast("Запрос ошибок отправлен в очередь")
                     } else toast("Сначала подключите ЭБУ")
                 }
+                action("Сбросить ошибки OBD-II (подтверждение)") { requestClearDtc() }
+                action("Отправить отчёт в ChatGPT") { shareDiagnosticReport() }
                 action("Экспорт журнала диагностики") { shareTrace() }
-                note("Это только стандартный OBD-II, а не полный скан блоков Mercedes.\nОчистка ошибок и изменение настроек автомобиля заблокированы.", muted, 14f)
+                note("Mode 04 очищает данные OBD-II, стоп-кадры и может сбросить readiness. " +
+                    "Не удаляет все фирменные ошибки MED40. Перед очисткой сохраните отчёт.",
+                    muted, 12f)
             }
             else -> {
                 section("Подключение", "ELM327 · Bluetooth Classic / SPP")
@@ -361,6 +365,34 @@ class MainActivity : Activity() {
         else if (ObdService.instance != null) startService(intent)
         else toast("Сначала подключите ELM327")
     }
+    private fun requestClearDtc() {
+        val service = ObdService.instance
+        if (service?.connected != true) { toast("Сначала подключите ЭБУ"); return }
+        if (service.lastDtcScanAt == 0L ||
+            System.currentTimeMillis() - service.lastDtcScanAt > 10 * 60_000L) {
+            toast("Сначала выполните свежий скан кодов"); return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Очистка DTC меняет состояние ЭБУ")
+            .setMessage("ВНИМАНИЕ: Mode 04 удаляет подтверждённые коды и стоп-кадры, " +
+                "может сбросить readiness/мониторы токсичности. " +
+                "Это НЕ ремонт и не очищает все Mercedes-коды. " +
+                "Автомобиль должен стоять, двигатель должен быть заглушен, зажигание включено.")
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Продолжить") { _, _ ->
+                AlertDialog.Builder(this)
+                    .setTitle("Подтвердить Mode 04?")
+                    .setMessage("Вы согласны очистить стандартные OBD-II коды " +
+                        "и потерять часть диагностических данных? " +
+                        "Другие команды управления автомобилем недоступны.")
+                    .setNegativeButton("Не очищать", null)
+                    .setPositiveButton("ДА, ОЧИСТИТЬ") { _, _ ->
+                        send(ObdService.CLEAR_DTC)
+                        toast("Команда в очереди: приложение проверит скорость и обороты")
+                    }.show()
+            }.show()
+    }
+
     private fun applyScreenMode() {
         val keep = getSharedPreferences("elm", MODE_PRIVATE).getBoolean("keep_screen", true)
         if (keep) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
