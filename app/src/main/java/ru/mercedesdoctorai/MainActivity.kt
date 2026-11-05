@@ -16,11 +16,16 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.WindowInsets
+import android.view.WindowManager
 import android.view.View
 import android.widget.*
 import androidx.core.content.FileProvider
 import java.io.File
 import java.util.Locale
+import java.util.zip.ZipOutputStream
+import java.util.zip.ZipEntry
+import android.content.ClipData
 
 /**
  * 0.4-style user interface (dark navy, mint controls, persistent four-tab navigation).
@@ -70,7 +75,13 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = 0
         window.decorView.setBackgroundColor(bg)
         requestBtPermission()
+        applyScreenMode()
         buildLayout()
+        if (ObdService.instance == null &&
+            getSharedPreferences("elm", MODE_PRIVATE).getBoolean("auto", true) &&
+            getSharedPreferences("elm", MODE_PRIVATE).contains("mac")) {
+            send(ObdService.CONNECT)
+        }
         handler.post(refresh)
     }
 
@@ -97,6 +108,14 @@ class MainActivity : Activity() {
             setBackgroundColor(bg)
             setPadding(dp(14), dp(10), dp(14), dp(8))
         }
+        if (Build.VERSION.SDK_INT >= 35) {
+            root.setOnApplyWindowInsetsListener { view, insets ->
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                view.setPadding(dp(14), dp(10) + bars.top, dp(14),
+                    dp(8) + bars.bottom)
+                insets
+            }
+        }
         val top = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -106,7 +125,7 @@ class MainActivity : Activity() {
         space(names, 3)
         names.addView(text("E200  /  W212  /  M274", 13f, muted))
         top.addView(names, LinearLayout.LayoutParams(0, -2, 1f))
-        versionTag = text("0.5", 14f, accent).apply {
+        versionTag = text("0.6", 14f, accent).apply {
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(10), dp(12), dp(10))
             background = background(surface, 24f, Color.rgb(54, 70, 86))
@@ -342,6 +361,22 @@ class MainActivity : Activity() {
         else if (ObdService.instance != null) startService(intent)
         else toast("Сначала подключите ELM327")
     }
+    private fun applyScreenMode() {
+        val keep = getSharedPreferences("elm", MODE_PRIVATE).getBoolean("keep_screen", true)
+        if (keep) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+    private fun exitApplication() {
+        AlertDialog.Builder(this).setTitle("Завершить Mercedes Doctor?")
+            .setMessage("Bluetooth отключится, фоновая запись остановится. " +
+                "Сохранённые CSV останутся на телефоне.")
+            .setNegativeButton("Отмена", null)
+            .setPositiveButton("Завершить") { _, _ ->
+                if (ObdService.instance != null) send(ObdService.DISCONNECT)
+                finishAndRemoveTask()
+            }.show()
+    }
+
     private fun requestBtPermission() {
         if (Build.VERSION.SDK_INT >= 31 &&
             checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
