@@ -53,7 +53,7 @@ class MainActivity : Activity() {
     private val refresh = object : Runnable {
         override fun run() {
             val service = ObdService.instance
-            val confirmed = if (service?.connected == true) service.values.size else 0
+            val confirmed = if (service?.connected == true) service.values.keys.count { it != "Напряжение OBD" } else 0
             headerStatus.text = (service?.status ?: "ELM327 не подключён") +
                 "  ·  PID: " + confirmed + "/10"
             val key = listOf(page, service?.connected, service?.recording,
@@ -232,7 +232,7 @@ class MainActivity : Activity() {
 
     private fun dataGrid() {
         val keys = listOf("ОЖ","Скорость","Дроссель","MAP","Нагрузка",
-            "Напряжение ECU","STFT","LTFT","Воздух")
+            "Напряжение ECU","Напряжение OBD","STFT","LTFT","Воздух")
         for (chunk in keys.chunked(2)) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             for (key in chunk) {
@@ -285,7 +285,8 @@ class MainActivity : Activity() {
                 if (service?.connected != true)
                     note("Нет подтверждённых данных ЭБУ. Нажмите ELM327 для подключения.", muted, 13f)
                 dataGrid()
-                note("Пустые показатели означают отсутствие подтверждённого ответа, а не ноль.", muted, 12f)
+                note("Напряжение OBD — на разъёме адаптера (ATRV), не напряжение ECU. " +
+                    "Пустые показатели не заменяются нулями.", muted, 12f)
             }
             1 -> {
                 section("Поездки", "Запись измерений и отчёты для анализа")
