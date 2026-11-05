@@ -49,6 +49,7 @@ class MainActivity : Activity() {
     private var connectionLabel: TextView? = null
     private var tripLabel: TextView? = null
     private var errorsLabel: TextView? = null
+    private var m274Hint: TextView? = null
     private lateinit var scrollView: ScrollView
     private val refresh = object : Runnable {
         override fun run() {
@@ -266,6 +267,13 @@ class MainActivity : Activity() {
         tripLabel?.text = if (service?.recording == true)
             "Запись: " + service.samples + " измерений" else "Запись остановлена"
         errorsLabel?.text = service?.dtcReport ?: "Нет данных диагностики"
+        val ltft = service?.values?.get("LTFT")?.substringBefore(" ")?.toDoubleOrNull()
+        val temp = service?.values?.get("ОЖ")?.substringBefore(" ")?.toDoubleOrNull()
+        m274Hint?.text = if (service?.connected == true && ltft != null && temp != null &&
+            temp >= 80 && kotlin.math.abs(ltft) >= 15.0)
+            "M274 · наблюдение: LTFT " + ltft + "% при ОЖ " + temp +
+                "°C. Сравните STFT, MAP и режим работы. Сам по себе показатель не доказывает неисправность."
+        else "M274 · стандартный OBD-II: LTFT/STFT/MAP; фирменные параметры MED40 могут быть недоступны."
     }
 
     private fun renderPage(service: ObdService?) {
@@ -276,6 +284,7 @@ class MainActivity : Activity() {
         connectionLabel = null
         tripLabel = null
         errorsLabel = null
+        m274Hint = null
         when (page) {
             0 -> {
                 section("Панель приборов", "M274 · данные ЭБУ в реальном времени")
@@ -285,6 +294,9 @@ class MainActivity : Activity() {
                 if (service?.connected != true)
                     note("Нет подтверждённых данных ЭБУ. Нажмите ELM327 для подключения.", muted, 13f)
                 dataGrid()
+                m274Hint = text("M274: анализ топливных коррекций появится после получения данных.", 12f, muted)
+                body.addView(m274Hint)
+                space(body, 9)
                 note("Напряжение OBD — на разъёме адаптера (ATRV), не напряжение ECU. " +
                     "Пустые показатели не заменяются нулями.", muted, 12f)
             }
