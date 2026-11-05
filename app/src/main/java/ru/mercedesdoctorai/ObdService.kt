@@ -21,6 +21,7 @@ class ObdService : Service() {
         const val DISCONNECT = "obd.DISCONNECT"
         const val RECORD = "obd.RECORD"
         const val DTC = "obd.DTC"
+        const val CLEAR_DTC = "obd.CLEAR_DTC"
         const val MED40 = "obd.MED40"
         const val DEVICE = "device"
         @Volatile var instance: ObdService? = null
@@ -39,6 +40,13 @@ class ObdService : Service() {
     @Volatile var samples = 0
     @Volatile private var running = false
     @Volatile private var needDtc = false
+    @Volatile private var needClear = false
+    @Volatile var dtcReport = "Считывание ошибок ещё не выполнялось"
+        private set
+    @Volatile var lastDtcScanAt = 0L
+        private set
+    private var lastSpeedAt = 0L
+    private var lastRpmAt = 0L
     private var address: String? = null
     private var socket: BluetoothSocket? = null
     private var csvFile: File? = null
@@ -51,7 +59,7 @@ class ObdService : Service() {
                 " | " + command + " | " + response.replace("\r", " ").replace("\n", " ").take(220) + "\n")
         } catch (_: Exception) {}
     }
-    private val permitted = setOf("ATI","ATZ","ATE0","ATL0","ATS0","ATH0","ATH1",
+    private val permitted = setOf("04","07","0A","0101","ATRV","ATI","ATZ","ATE0","ATL0","ATS0","ATH0","ATH1",
         "ATAT1","ATSP0","ATDP","ATSH7E0","ATSH7DF","03","0100","0120") + pids.keys
     @Volatile private var medProbePending = true
 
@@ -105,6 +113,11 @@ class ObdService : Service() {
                 refreshNotification()
             }
             DTC -> needDtc = true
+            CLEAR_DTC -> {
+                if (connected && lastDtcScanAt > 0L &&
+                    System.currentTimeMillis() - lastDtcScanAt < 10 * 60_000L) needClear = true
+                else dtcReport = "Сначала выполните свежий скан ошибок при подключённом ЭБУ."
+            }
             MED40 -> {
                 med40 = !med40
                 medProbePending = med40
