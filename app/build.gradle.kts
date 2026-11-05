@@ -6,7 +6,7 @@ android {
     namespace = "ru.mercedesdoctorai"
     compileSdk = 35
     defaultConfig {
-        applicationId = "ru.mercedesdoctorai"
+        applicationId = "ru.mercedesdoctorai.test"
         minSdk = 26
         targetSdk = 35
         versionCode = 6
