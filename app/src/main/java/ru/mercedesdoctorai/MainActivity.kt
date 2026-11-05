@@ -300,7 +300,8 @@ class MainActivity : Activity() {
                     } else send(ObdService.RECORD)
                 }
                 action("История поездок") { showHistory() }
-
+                action("Отчёт поездки → ChatGPT") { shareDiagnosticReport(latestTrip()) }
+                action("Экспорт ZIP (поездка + DTC)") { shareZip(latestTrip()) }
                 note("Запись через службу Android продолжается при сворачивании приложения; не завершайте службу принудительно.", muted, 13f)
             }
             2 -> {
@@ -341,14 +342,27 @@ class MainActivity : Activity() {
                     }
                 }
                 body.addView(sw)
+                val keep = Switch(this).apply {
+                    text = "Не гасить экран, пока приложение открыто"
+                    textSize = 13f
+                    setTextColor(white)
+                    isChecked = getSharedPreferences("elm", MODE_PRIVATE).getBoolean("keep_screen", true)
+                    setOnCheckedChangeListener { _, checked ->
+                        getSharedPreferences("elm", MODE_PRIVATE)
+                            .edit().putBoolean("keep_screen", checked).apply()
+                        applyScreenMode()
+                    }
+                }
+                body.addView(keep)
                 space(body, 10)
                 twoActions("Журнал ELM327", { shareTrace() },
                     if (service?.med40 == true) "MED40: выключить" else "MED40: проба", {
                         if (ObdService.instance?.connected == true) send(ObdService.MED40)
                         else toast("Сначала подключите ЭБУ")
                     })
-                note("MED40 — только пробный запрос чтения. Ошибки не очищаются, настройки ЭБУ не изменяются.",
+                note("MED40: пробное чтение. Полный скан доступен только с совместимой диагностикой.",
                     muted, 12f)
+                action("Завершить приложение и отключить ELM327") { exitApplication() }
             }
 
         }
