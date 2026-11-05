@@ -176,7 +176,44 @@ class ObdService : Service() {
                     while (running && socket?.isConnected == true) {
                         if (needDtc) {
                             needDtc = false
-                            detail = parseDtc(send("03", 6500))
+                            val monitor = send("0101", 4000)
+                            val stored = DtcDecoder.decode(send("03", 6500), 3)
+                            val pending = DtcDecoder.decode(send("07", 6500), 7)
+                            val permanent = DtcDecoder.decode(send("0A", 6500), 10)
+                            dtcReport = buildString {
+                                appendLine("Mercedes E200 W212 / M274 · OBD-II, не Xentry")
+                                appendLine("Дата epoch ms: " + System.currentTimeMillis())
+                                appendLine("MIL/readiness PID 0101: " + monitor)
+                                appendLine(stored.describe("Подтверждённые, 03"))
+                                appendLine(pending.describe("Ожидающие, 07"))
+                                appendLine(permanent.describe("Постоянные, 0A"))
+                                appendLine("Фирменные MED40 ошибки могут отсутствовать.")
+                            }
+                            detail = dtcReport
+                            lastDtcScanAt = System.currentTimeMillis()
+                            persistDtc(dtcReport)
+                        }
+                        if (needClear) {
+                            needClear = false
+                            val stopped = values["Обороты"]?.substringBefore(" ")?.toIntOrNull() == 0 &&
+                                SystemClock.elapsedRealtime() - lastRpmAt < 5000
+                            val stationary = values["Скорость"]?.substringBefore(" ")?.toIntOrNull() == 0 &&
+                                SystemClock.elapsedRealtime() - lastSpeedAt < 5000
+                            if (!stopped || !stationary) {
+                                dtcReport = "Очистка отменена: нужны скорость 0, двигатель заглушен " +
+                                    "и свежие данные OBD-II. Данные не изменены."
+                            } else {
+                                val prior = dtcReport
+                                val reply = send("04", 6500)
+                                val verified = reply.replace(Regex("[^0-9A-Fa-f]"), "")
+                                    .uppercase(Locale.US).contains("44")
+                                dtcReport = if (verified)
+                                    "Mode 04: ответ ЭБУ 44 получен. Readiness и стоп-кадры могли быть сброшены.\n" + prior
+                                else "Mode 04: подтверждения очистки нет: " + reply + "\n" + prior
+                                persistDtc(dtcReport)
+                                detail = dtcReport
+                                lastDtcScanAt = 0L
+                            }
                         }
                         if (med40 && medProbePending) {
                             medProbePending = false
@@ -262,6 +299,16 @@ class ObdService : Service() {
             else -> null
         }
     }
+    private fun persistDtc(report: String) {
+        try {
+            val dir = File(filesDir, "diagnostics").apply { mkdirs() }
+            File(dir, "dtc-last.txt").writeText(report)
+            File(dir, "dtc-history.txt").appendText("\n-----\n" + report + "\n")
+        } catch (_: Exception) {}
+    }
+    fun dtcFile(): File? = File(File(filesDir, "diagnostics"), "dtc-last.txt")
+        .takeIf { it.exists() }
+
     private fun parseDtc(raw: String): String {
         val hex = raw.uppercase(Locale.US).replace(Regex("[^0-9A-F]"), "")
         val start = hex.indexOf("43")
